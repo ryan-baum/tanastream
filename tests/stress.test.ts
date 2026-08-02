@@ -96,6 +96,16 @@ describe("TanaStream synthetic stress", () => {
     expect(markerFor(makeRow({ dedupKey: "edit:x", opType: "edit", payload: { nodeId: "n", name: "y" } }))).toBeNull();
   });
 
+  // Forge-audit fix (U-10, Finding 1): rawTanaPaste:true must opt OUT of the marker under the
+  // SAME isRaw() predicate validate.ts uses to opt out of hazard-checking — not just the literal
+  // tanaPaste-string case. Both directions: rawTanaPaste:true (with no literal tanaPaste string,
+  // just structured fields the producer wants Tana-Paste-reinterpreted) yields null; a normal
+  // structured create (no raw opt-out at all) still gets a marker (no over-correction).
+  test("S3b rawTanaPaste:true yields null marker even without a literal tanaPaste string", () => {
+    expect(markerFor(makeRow({ dedupKey: "create:raw1", payload: { name: "Status:: Done", rawTanaPaste: true } }))).toBeNull();
+    expect(markerFor(makeRow({ dedupKey: "create:clean1", payload: { name: "Clean name" } }))).not.toBeNull();
+  });
+
   // Faithful Local API read-back: every rendered line carries a "<!-- node-id: X -->" suffix.
   // Tests MUST exercise THIS shape (not raw buildTanaPaste output), or they give false
   // confidence — the exact gap that let a false-reject regression ship to the live graph.

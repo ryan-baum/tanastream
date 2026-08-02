@@ -1,4 +1,4 @@
-import type { ApplyRoute, DrainResult, EnqueueInput, EnqueueResult, TanaBackend, WriteRow } from "./types";
+import type { ApplyResult, ApplyRoute, DrainResult, EnqueueInput, EnqueueResult, TanaBackend, WriteRow } from "./types";
 import type { TanaSpool } from "./spool";
 import { markerFor } from "./realBackend";
 import { DEFAULT_LOCAL_MIN_INTERVAL_MS } from "./config";
@@ -42,9 +42,11 @@ export async function reconcileAppliedInput(spool: TanaSpool, backend: TanaBacke
   let reconciledCount = 0;
   const rows = spool.inputRowsNeedingReconcile(options.batchLimit ?? 100);
   for (const row of rows) {
+    // These rows are already marked 'applied' (via Input route) — an "unknown" outcome here just
+    // means try again next tick; it never risks a duplicate apply the way drainOnce's use does.
     const reconciled = await safeReconcile(backend, row);
-    if (!reconciled) continue;
-    spool.markReconciled(row.id, reconciled, nowMs);
+    if (reconciled.status !== "found") continue;
+    spool.markReconciled(row.id, reconciled.result, nowMs);
     reconciledCount += 1;
   }
   return reconciledCount;
@@ -87,9 +89,19 @@ export async function drainOnce(spool: TanaSpool, backend: TanaBackend, options:
     }
 
     const reconciled = await safeReconcile(backend, row);
-    if (reconciled) {
-      spool.markApplied(row.id, reconciled, nowMs);
-      return { kind: "applied", writeId: row.id, route: reconciled.route, reconciled: true };
+    if (reconciled.status === "found") {
+      spool.markApplied(row.id, reconciled.result, nowMs);
+      return { kind: "applied", writeId: row.id, route: reconciled.result.route, reconciled: true };
+    }
+    if (reconciled.status === "unknown") {
+      // Forge-audit fix (U-10, Finding 2): fail closed. We could not confirm whether this write
+      // already landed on a prior attempt — proceeding to apply() now risks a real duplicate.
+      // Hold instead (same per-row-held bookkeeping as an unavailable route) and let the next
+      // drain tick's reconcile retry; it costs no attempt budget.
+      held += 1;
+      firstHoldReason ||= `reconcile could not confirm apply state: ${reconciled.error}`;
+      spool.markHeld(row.id, firstHoldReason, nowMs);
+      continue;
     }
 
     const claimed = spool.markInflight(row.id, nowMs);
@@ -135,11 +147,21 @@ function holdReason(row: WriteRow, health: { localAvailable: boolean; inputAvail
   return "No eligible route available";
 }
 
-async function safeReconcile(backend: TanaBackend, row: WriteRow) {
+/**
+ * Forge-audit fix (U-10, Finding 2): the old contract (`T | null`, catching every exception into
+ * null) could not distinguish "definitively not found" from "couldn't tell due to a transport
+ * failure" — both collapsed to the same falsy value, and every caller treated "falsy" as license
+ * to proceed toward apply(). A genuine transport failure now surfaces as `status: "unknown"`
+ * instead, so callers can fail closed (hold, don't apply) rather than risking a duplicate.
+ */
+type ReconcileOutcome = { status: "found"; result: ApplyResult } | { status: "not-found" } | { status: "unknown"; error: string };
+
+async function safeReconcile(backend: TanaBackend, row: WriteRow): Promise<ReconcileOutcome> {
   try {
-    return await backend.reconcile(row);
-  } catch {
-    return null;
+    const result = await backend.reconcile(row);
+    return result ? { status: "found", result } : { status: "not-found" };
+  } catch (error) {
+    return { status: "unknown", error: error instanceof Error ? error.message : String(error) };
   }
 }
 

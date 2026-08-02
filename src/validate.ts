@@ -38,7 +38,18 @@ export function findTanaHazard(text: string): string | null {
   return null;
 }
 
-function isRaw(payload: CreateContent): boolean {
+/**
+ * A create is "raw" — Tana Paste control syntax in name/description/children is INTENTIONAL, not
+ * a hazard — under EITHER opt-out: a literal pre-formatted `tanaPaste` string, or `rawTanaPaste:
+ * true` (build the paste from the structured fields as usual, but don't hazard-check them, and
+ * don't assume they land literally afterward). Exported so realBackend.ts's marker/literal-
+ * verification logic uses the SAME predicate this validator does — a Forge-audit finding (U-10):
+ * both previously tested only `typeof tanaPaste === "string"`, so a `rawTanaPaste:true` payload
+ * with no `tanaPaste` string skipped the denylist here but still got marker + literal
+ * verification downstream, which fails against content Tana legitimately reinterpreted —
+ * orphan-duplicating up to maxAttempts (the BUG-2 amplification class).
+ */
+export function isRaw(payload: CreateContent): boolean {
   return typeof payload.tanaPaste === "string" || payload.rawTanaPaste === true;
 }
 

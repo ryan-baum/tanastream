@@ -1,4 +1,5 @@
 import { resolveConfig, DEFAULT_LOCAL_ENDPOINT, type TanaStreamConfig } from "./config";
+import { isRaw } from "./validate";
 import type { ApplyResult, ApplyRoute, BackendHealth, TanaBackend, WriteRow } from "./types";
 
 interface CreatedNode {
@@ -37,6 +38,15 @@ export class RealTanaBackend implements TanaBackend {
     return this.applyLocal(row);
   }
 
+  /**
+   * Forge-audit fix (U-10, Finding 2): a transport failure DURING reconcile must never resolve to
+   * a definitive "not found" — that would let the caller (queue.ts's drainOnce) proceed to
+   * `apply()` a write that may already have landed, creating a real duplicate. The listing GET is
+   * no longer caught here (it propagates); a per-candidate read failure no longer silently
+   * `continue`s past a node that might have BEEN the marker — it's tracked, and if the search
+   * completes without a definitive match while any candidate read failed, this throws instead of
+   * returning null. Only a clean sweep with zero read failures returns a reliable null.
+   */
   async reconcile(row: WriteRow): Promise<ApplyResult | null> {
     if (row.opType !== "create") return null;
     const health = await this.health();
@@ -52,7 +62,9 @@ export class RealTanaBackend implements TanaBackend {
     // seen-id + no-progress guards keep this safe (and terminating) even if the API ignores offset.
     const pageSize = 1000;
     const seen = new Set<string>();
+    let anyReadFailed = false;
     for (let offset = 0; ; offset += pageSize) {
+      // NOT caught: a transport failure on the listing itself must propagate (fail closed).
       const page = await this.localJson<{ children?: Array<{ id: string; name: string }> }>(
         `/nodes/${encodeURIComponent(targetNodeId)}/children?limit=${pageSize}&offset=${offset}`,
         { method: "GET" },
@@ -64,7 +76,16 @@ export class RealTanaBackend implements TanaBackend {
         seen.add(child.id);
         newCount += 1;
         if (expectedName && child.name !== expectedName) continue;
-        const read = await this.readNode(child.id, 3).catch(() => null);
+        let read: { markdown: string } | null;
+        try {
+          read = await this.readNode(child.id, 3);
+        } catch {
+          // Could not confirm or deny THIS candidate — the eventual "not found" verdict is
+          // unreliable if this is the only name-matching candidate. Flag and keep searching
+          // (a later candidate might still resolve the match definitively).
+          anyReadFailed = true;
+          continue;
+        }
         if (read?.markdown && markerMatches(read.markdown, row)) {
           return {
             route: "local",
@@ -74,6 +95,12 @@ export class RealTanaBackend implements TanaBackend {
         }
       }
       if (kids.length < pageSize || newCount === 0) break;
+    }
+    if (anyReadFailed) {
+      throw new Error(
+        "reconcile could not confirm the marker's absence — at least one name-matching candidate's " +
+          "read-back failed transiently; refusing to report a definitive not-found (would risk a duplicate apply)",
+      );
     }
     return null;
   }
@@ -144,8 +171,12 @@ export class RealTanaBackend implements TanaBackend {
     if (marker && !markerMatches(read.markdown, row)) throw new Error("Local create verification failed: idempotency marker missing");
     // F1 backstop: for structured creates, verify the node landed LITERALLY (name + each child).
     // This catches any Tana Paste misparse the enqueue-time denylist missed (e.g. an unknown
-    // control sequence) — it converts silent corruption into a loud dead-letter. Raw paste opts out.
-    if (typeof row.payload.tanaPaste !== "string") {
+    // control sequence) — it converts silent corruption into a loud dead-letter.
+    // Raw paste (isRaw, not just a literal tanaPaste string — Forge-audit fix, U-10) opts out:
+    // rawTanaPaste:true means Tana Paste syntax in name/description/children is INTENTIONAL, so
+    // the read-back is expected to differ from the literal payload (that's the whole point), and
+    // this literal-equality check would misfire as a false "misparse" on every legitimate use.
+    if (!isRaw(row.payload)) {
       const expectedName = typeof row.payload.name === "string" ? oneLine(row.payload.name) : null;
       if (expectedName !== null && read.name !== expectedName) {
         throw new Error(`Local create verification failed: node name mismatch (expected ${JSON.stringify(expectedName)}, got ${JSON.stringify(read.name ?? null)}) — possible Tana Paste misparse`);
@@ -501,10 +532,14 @@ function buildInputNode(row: WriteRow): Record<string, unknown> {
 export function markerFor(row: WriteRow): string | null {
   if (row.opType !== "create") return null;
   if (row.payload.includeIdempotencyMarker === false) return null;
-  // Raw Tana Paste opts out of the marker: buildTanaPaste returns the raw string WITHOUT appending a
-  // marker line, so requiring one would fail verification on EVERY attempt and orphan-duplicate the
-  // create (the BUG-2 amplification class). Raw paste is at-least-once by design (R1-adjacent).
-  if (typeof row.payload.tanaPaste === "string") return null;
+  // Raw Tana Paste opts out of the marker under EITHER raw mechanism (isRaw — Forge-audit fix,
+  // U-10; previously only the literal-tanaPaste-string case was checked here, while
+  // rawTanaPaste:true fell through to a marker that got appended into content the producer
+  // explicitly wants Tana-Paste-reinterpreted, an assumption verification can't safely make).
+  // A literal tanaPaste string bypasses buildTanaPaste's marker-append entirely (early return);
+  // rawTanaPaste:true with structured fields still gets built normally but now correctly gets NO
+  // marker line either. Raw paste is at-least-once by design (R1-adjacent) either way.
+  if (isRaw(row.payload)) return null;
   return `${IDEMPOTENCY_PREFIX}${row.dedupKey}`;
 }
 
