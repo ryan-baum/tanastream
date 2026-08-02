@@ -21,12 +21,12 @@ A direct stress test (2026-08-01, Tana Outliner 1.523.0 / Local API 1.0.0) ran 3
 
 What the measurement didn't touch is everything *around* the write, and that's where the queue earns its keep:
 
-1. **Crash durability.** A sequential await-loop with no persistence drops every pending write the moment the process dies. The SQLite outbox (`synchronous=FULL`, WAL mode) makes a write-intent survive.
-2. **Tana being closed.** The Local API exists only while Tana is running. A scheduled writer needs somewhere to put a write at 4am and a way to apply it at 9.
-3. **Idempotency.** Tana issues no idempotency token. A safe retry requires proving, after the fact, whether the previous attempt landed. tanastream proves it: a visible `TanaStreamIdempotency - <key>` marker child plus a reconcile-before-retry pass.
-4. **Pacing.** The same test showed a write burst stalls every other reader on the API ~25× — reads drop from ~5,000/sec to ~200/sec, with individual reads hanging up to 2.4 seconds during a 50-write burst. The drain loop paces writes by default, so your bulk import doesn't freeze whatever else is reading.
+1. If the process dies mid-batch, a plain await-loop drops every write still pending. The SQLite outbox (`synchronous=FULL`, WAL mode) is what makes a write-intent survive the crash.
+2. The Local API exists only while Tana is running, so a scheduled writer needs somewhere to put a write at 4am and a way to apply it at 9.
+3. Tana issues no idempotency token, so a safe retry means proving after the fact whether the last attempt landed. tanastream proves it: a visible `TanaStreamIdempotency - <key>` marker child plus a reconcile-before-retry pass.
+4. A write burst stalls every other reader on the same API ~25× — reads drop from ~5,000/sec to ~200/sec, with individual reads hanging up to 2.4 seconds during a 50-write burst. So the drain loop paces writes by default, and your bulk import doesn't freeze whatever else is reading.
 
-**The open question:** move, trash, field set, tag add/remove, and schema mutation were never exercised under concurrent load. tanastream routes all eight op types through the queue anyway — those five are queue-governed because nothing ruled a problem out, and I'd rather ship "untested" as a label than as a surprise. If you run several writers against one graph, treat those five as the frontier.
+The open question is the other five ops: move, trash, field set, tag add/remove, and schema mutation were never exercised under concurrent load. tanastream routes all eight op types through the queue anyway — those five are queue-governed because nothing ruled a problem out, and I'd rather ship "untested" as a label than as a surprise. If you run several writers against one graph, treat those five as the frontier.
 
 ## Install
 
@@ -72,7 +72,7 @@ For always-on operation — a daemon that drains continuously — see [`docs/OPE
 
 Every structured `create` gets a visible child node — `TanaStreamIdempotency - <key>` — by default. That marker is what makes crash-replay safe: if the process dies mid-write and retries, tanastream reads the target's children back, finds the marker, and skips re-creating the node instead of duplicating it.
 
-Don't want marker nodes in your graph? Opt out per-write:
+If you don't want marker nodes in your graph, opt out per-write:
 
 ```bash
 ./tanastream enqueue create --name "No marker please" --target INBOX --key key-2 --no-marker
