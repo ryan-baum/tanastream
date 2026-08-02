@@ -75,7 +75,7 @@ export class RealTanaBackend implements TanaBackend {
         if (seen.has(child.id)) continue;
         seen.add(child.id);
         newCount += 1;
-        if (expectedName && child.name !== expectedName) continue;
+        if (expectedName && !readbackTextEqual(child.name, expectedName)) continue;
         let read: { markdown: string } | null;
         try {
           read = await this.readNode(child.id, 3);
@@ -177,7 +177,7 @@ export class RealTanaBackend implements TanaBackend {
     // check would misfire as a false "misparse" on every legitimate use.
     if (!isRaw(row.payload)) {
       const expectedName = typeof row.payload.name === "string" ? oneLine(row.payload.name) : null;
-      if (expectedName !== null && read.name !== expectedName) {
+      if (expectedName !== null && !readbackTextEqual(read.name ?? null, expectedName)) {
         throw new Error(`Local create verification failed: node name mismatch (expected ${JSON.stringify(expectedName)}, got ${JSON.stringify(read.name ?? null)}) — possible Tana Paste misparse`);
       }
       const childLines = readbackChildLines(read.markdown);
@@ -185,14 +185,14 @@ export class RealTanaBackend implements TanaBackend {
       // Without this a structured create could silently lose/mutate its description and still mark applied.
       if (typeof row.payload.description === "string" && row.payload.description.trim()) {
         const expectedDesc = `Description: ${oneLine(row.payload.description)}`;
-        if (!childLines.includes(expectedDesc)) {
+        if (!childLines.some((line) => readbackTextEqual(line, expectedDesc))) {
           throw new Error(`Local create verification failed: description did not land as ${JSON.stringify(expectedDesc)} — possible Tana Paste misparse`);
         }
       }
       const expectedChildren = Array.isArray(row.payload.children) ? row.payload.children : [];
       for (const child of expectedChildren) {
         const text = childDisplayText(child) ?? "";
-        if (text && !childLines.includes(text)) {
+        if (text && !childLines.some((line) => readbackTextEqual(line, text))) {
           throw new Error(`Local create verification failed: child ${JSON.stringify(text)} did not land as a child node — possible Tana Paste misparse`);
         }
       }
@@ -230,13 +230,13 @@ export class RealTanaBackend implements TanaBackend {
     const read = await this.readNode(nodeId, 1);
     if (wantName !== undefined) {
       const got = typeof read.name === "string" ? oneLine(read.name) : null;
-      if (got !== oneLine(wantName)) {
+      if (!readbackTextEqual(got, wantName)) {
         throw new Error(`Local edit verification failed: name mismatch (expected ${JSON.stringify(oneLine(wantName))}, got ${JSON.stringify(got)})`);
       }
     }
     if (wantDescription !== undefined) {
       const got = typeof read.description === "string" ? oneLine(read.description) : "";
-      if (got !== oneLine(wantDescription)) {
+      if (!readbackTextEqual(got, wantDescription)) {
         throw new Error(`Local edit verification failed: description mismatch (expected ${JSON.stringify(oneLine(wantDescription))}, got ${JSON.stringify(got)})`);
       }
     }
@@ -319,7 +319,7 @@ export class RealTanaBackend implements TanaBackend {
           `which would risk creating a duplicate tag. Raw result: ${JSON.stringify(result).slice(0, 500)}`,
       );
     }
-    const match = tags.find((t) => t && typeof t === "object" && t.name === name && typeof t.id === "string");
+    const match = tags.find((t) => t && typeof t === "object" && typeof t.name === "string" && readbackTextEqual(t.name, name) && typeof t.id === "string");
     return typeof match?.id === "string" ? match.id : null;
   }
 
@@ -628,6 +628,27 @@ function extractMcpResponseBody(text: string, contentType: string | null): strin
     .filter((line) => line.startsWith("data:"))
     .map((line) => line.slice(5).trimStart());
   return dataLines.length > 0 ? dataLines.join("\n") : text;
+}
+
+
+// Tana's Local API HTML-escapes entities on read-back (& → &amp;, < → &lt;, …) while payloads carry
+// them raw, so a byte comparison false-mismatches any name containing them. Upstream incident
+// (2026-08-02): create succeeded, verification threw "name mismatch", reconcile missed the marker
+// node for the same reason, and each retry created another real node — 5 duplicates, then dead.
+// Decode on BOTH sides before comparing; either side may arrive escaped.
+// Known limits (Forge audit 2026-08-02): the entity set is the set OBSERVED from Tana so far, not a
+// spec — extend it if a new escaped form surfaces; and decoding both sides means a name whose
+// intended literal text is "&amp;" compares equal to one containing "&" (accepted trade: strictly
+// safer than the raw comparison that caused the 5-duplicate incident).
+const TANA_ENTITIES: Record<string, string> = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'", "&apos;": "'", "&nbsp;": " " };
+
+export function decodeTanaEntities(value: string): string {
+  return value.replace(/&(?:amp|lt|gt|quot|#39|apos|nbsp);/g, (entity) => TANA_ENTITIES[entity] ?? entity);
+}
+
+export function readbackTextEqual(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (typeof a !== "string" || typeof b !== "string") return a === b;
+  return oneLine(decodeTanaEntities(a)) === oneLine(decodeTanaEntities(b));
 }
 
 function oneLine(value: string): string {

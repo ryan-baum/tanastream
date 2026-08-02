@@ -460,3 +460,10 @@ function printJson(value: unknown): void {
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+// Direct execution (`bun src/cli.ts …`) was a silent no-op — main() is exported for the ./tanastream
+// bin wrapper and nothing here invoked it, so an "enqueue" could appear to run while writing nothing.
+// Guarded self-invocation keeps library imports side-effect-free (import.meta.main is false there).
+if (import.meta.main) {
+  await main();
+}
