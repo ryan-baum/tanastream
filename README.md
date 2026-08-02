@@ -127,6 +127,20 @@ problem space — it maintains a searchable local index of your Tana graph. tana
 write-only (see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)) and doesn't overlap with it; they
 compose.
 
+## What's proven against a real Tana instance, and what isn't (yet)
+
+Honest status, as of this writing: `create`, `move`, `trash`, and reading a node back are proven
+against a real Tana Local API (they're what the concurrency measurement above actually exercised
+live). The other four op types — `tag`, `tag-create`, `field`, and `done` — go over Tana's `/mcp`
+JSON-RPC endpoint rather than REST, and **have not yet been exercised against a live Tana
+instance** by this codebase; their implementation is built directly from Tana's published tool
+schemas and the documented `/mcp` failure contract (`isError`, not HTTP status, decides success),
+but the actual wire behavior for those four is unconfirmed. The hermetic test suite (`bun test`)
+covers all eight against a mock server; the one test that talks to real Tana
+(`tests/live-smoke.test.ts`) currently only exercises `create`. If you hit something that looks
+wrong specifically on `tag`/`tag-create`/`field`/`done`, that's the most likely place — please
+file an issue with the exact error.
+
 ## Development
 
 ```bash

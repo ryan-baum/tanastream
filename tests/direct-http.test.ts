@@ -22,7 +22,7 @@ let server: ReturnType<typeof Bun.serve> | null = null;
 let PORT = 0;
 let nodesById: Record<string, MockNode> = {};
 let tags: Array<{ id: string; name: string }> = [];
-let mcpMode: "ok" | "isError" | "http500" | "rpcError" | "malformed" | "unparseableListTags" = "ok";
+let mcpMode: "ok" | "isError" | "http500" | "rpcError" | "malformed" | "unparseableListTags" | "sseFramed" = "ok";
 let lastMcpAccept: string | null = null;
 let lastMcpCall: { name: string; arguments: Record<string, unknown> } | null = null;
 let createTagCallCount = 0;
@@ -55,6 +55,16 @@ beforeAll(() => {
         }
         if (mcpMode === "isError") {
           return Response.json({ jsonrpc: "2.0", id: body.id, result: { isError: true, content: [{ type: "text", text: "simulated tool failure" }] } });
+        }
+        if (mcpMode === "sseFramed") {
+          // A defensive-parsing test: the server answers with text/event-stream framing (a valid
+          // choice per the mandatory Accept header) instead of plain JSON. The success payload is
+          // wrapped in "data: <json>" lines rather than being the bare response body.
+          const payload = JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { isError: false, content: [{ type: "text", text: "ok" }] } });
+          return new Response(`event: message\ndata: ${payload}\n\n`, {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          });
         }
 
         if (toolName === "list_tags" && mcpMode === "unparseableListTags") {
@@ -430,6 +440,21 @@ describe("R-6: the full /mcp failure contract (verifier, both directions)", () =
     const { backend, cleanup } = makeBackend();
     try {
       const row = rowFor("done", "acc6", { nodeId: "n1" });
+      const result = await backend.apply(row, "local", { nowMs: Date.now() });
+      expect(result.route).toBe("local");
+    } finally {
+      cleanup();
+    }
+  });
+
+  // Forge-audit fix (U-10, Finding 7): the mandatory Accept header offers the server EITHER
+  // application/json or text/event-stream — a real SSE-framed reply must not be treated as
+  // "non-JSON response" just because the body isn't a bare JSON object.
+  test("an SSE-framed response (Content-Type: text/event-stream, data: lines) parses correctly", async () => {
+    const { backend, cleanup } = makeBackend();
+    try {
+      mcpMode = "sseFramed";
+      const row = rowFor("done", "acc7", { nodeId: "n1" });
       const result = await backend.apply(row, "local", { nowMs: Date.now() });
       expect(result.route).toBe("local");
     } finally {

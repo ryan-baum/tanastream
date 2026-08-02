@@ -453,9 +453,10 @@ export class RealTanaBackend implements TanaBackend {
     });
     const text = await response.text();
     if (!response.ok) throw new Error(`/mcp HTTP ${response.status} calling ${name}: ${text}`);
+    const body = extractMcpResponseBody(text, response.headers.get("content-type"));
     let parsed: { result?: Record<string, unknown>; error?: { code?: number; message?: string } };
     try {
-      parsed = JSON.parse(text) as typeof parsed;
+      parsed = JSON.parse(body) as typeof parsed;
     } catch {
       throw new Error(`/mcp non-JSON response calling ${name}: ${text}`);
     }
@@ -597,6 +598,24 @@ function parseMcpJson<T>(result: Record<string, unknown>): T | null {
     }
   }
   return null;
+}
+
+/**
+ * `/mcp` requests advertise `Accept: application/json, text/event-stream` — Tana's server is free
+ * to answer with either. Every live call this codebase has directly observed came back as plain
+ * JSON, but tolerating an SSE-framed reply defensively (rather than assuming JSON always) costs
+ * nothing and avoids a false "non-JSON response" error if the server ever chooses that framing.
+ * SSE framing wraps the payload in `data: <content>` lines (blank-line-terminated events, per the
+ * SSE spec's multi-line-data join rule) rather than a bare JSON body. Only unwraps when the
+ * response's own Content-Type says event-stream; a plain JSON body passes through untouched.
+ */
+function extractMcpResponseBody(text: string, contentType: string | null): string {
+  if (!contentType?.includes("text/event-stream")) return text;
+  const dataLines = text
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart());
+  return dataLines.length > 0 ? dataLines.join("\n") : text;
 }
 
 function oneLine(value: string): string {

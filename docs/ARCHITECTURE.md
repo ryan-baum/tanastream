@@ -58,6 +58,19 @@ operations directly; Tana's `/mcp` endpoint (same process, same port, JSON-RPC 2
 `-32000 Not Acceptable` error), and success is judged **solely** by the JSON-RPC response's
 `result.isError` field — never by HTTP status. A 200-with-`isError:true` response is a real,
 observed failure mode; treating any 2xx as success would silently mark a failed write as applied.
+The response body is parsed defensively against either wire form the Accept header allows (a bare
+JSON object, or `text/event-stream` framing with `data:`-prefixed lines) — this codebase has only
+directly observed the plain-JSON form live, so the SSE-framing path is untested-but-tolerated
+rather than assumed unnecessary. **`tag`, `tag-create`, `field`, and `done` themselves — the
+`/mcp` half of this table — have not been exercised against a live Tana instance by this codebase**
+(see the README's "What's proven... and what isn't" section); their implementation follows Tana's
+published tool schemas, not observed live responses.
+
+**Also unconfirmed:** whether `/mcp` requires a prior `initialize` JSON-RPC handshake (establishing
+a session, receiving an `Mcp-Session-Id`) before `tools/call` is accepted. The `tools/list` and
+`import_tana_paste` calls this codebase HAS observed live both succeeded with no such handshake, so
+none is sent — but that's evidence for the calls actually made, not a guarantee for `tag`/
+`tag-create`/`field`/`done`, which weren't among them.
 
 **Tag and field IDs, not names.** `tag`'s and `field`'s `/mcp` tools take `tagIds`/`attributeId` —
 opaque IDs, not human-readable names. A standalone install has no local name-resolution index (the
