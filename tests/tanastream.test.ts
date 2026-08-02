@@ -247,6 +247,37 @@ describe("TanaStream adversarial matrix", () => {
     expect(spool.status()).toMatchObject({ pending: 1, applied: 0, dead: 0 });
   }));
 
+  // Forge-audit fix (U-10, Finding 5): each held row's OWN reason must land in ITS OWN
+  // hold_reason column — the old code stamped every held row in a batch with whichever row's
+  // reason was computed FIRST, mislabeling every subsequent row.
+  test("M17 each held row gets its OWN hold reason, not the first row's", withSpool(async ({ spool }) => {
+    const backend = new FakeBackend({ localOpen: false }); // Local down; Input up (default)
+    const rawPaste = await enqueueWrite(spool, {
+      opType: "create",
+      idempotencyKey: "raw-held",
+      payload: { tanaPaste: "%%tana%%\n- Raw" },
+      targetNodeId: "INBOX",
+      source: "test",
+    });
+    const mutation = await enqueueWrite(spool, {
+      opType: "edit",
+      idempotencyKey: "mutation-held",
+      payload: { nodeId: "n1", name: "Edited" },
+      targetNodeId: "n1",
+      source: "test",
+    });
+
+    const result = await drainOnce(spool, backend, { nowMs: 1_000 });
+    expect(result).toMatchObject({ kind: "held", held: 2 });
+
+    const rawRow = spool.getById(rawPaste.id);
+    const mutationRow = spool.getById(mutation.id);
+    expect(rawRow?.holdReason).toBe("Local API unavailable; raw Tana Paste create requires the Local route");
+    expect(mutationRow?.holdReason).toBe("Local API unavailable; mutation-shaped op held");
+    // The two reasons must be DIFFERENT — proving neither row inherited the other's label.
+    expect(rawRow?.holdReason).not.toBe(mutationRow?.holdReason);
+  }));
+
   test("M15 atomic inflight claim prevents a second drainer from applying the same row", withSpool(async ({ spool }) => {
     const backend = new FakeBackend({ localOpen: true });
     const row = await enqueueWrite(spool, {
@@ -475,6 +506,30 @@ describe("TanaStream adversarial matrix", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // Forge-audit fix (U-10, Finding 3): a ledger-write failure AFTER a successful apply must not
+  // be folded into the ordinary apply-failure retry path — the mutation already landed on Tana's
+  // side, and for every op type except create (which reconcile() can catch via the idempotency
+  // marker), retrying would blindly re-execute an already-applied side effect. Isolates ONLY
+  // markApplied (not the whole spool) so a working markRetryOrDead can still prove the OLD code's
+  // exact failure mode: catching this into a silent, falsely-retryable outcome.
+  test("M16 a post-apply ledger write failure propagates uncaught — never silently retried", withSpool(async ({ spool }) => {
+    const backend = new FakeBackend({ localOpen: true });
+    spool.markApplied = (_id: number, _result: unknown, _nowMs: number) => {
+      throw new Error("simulated ledger write failure after a successful apply");
+    };
+    await enqueueWrite(spool, {
+      opType: "create",
+      idempotencyKey: "post-apply-fail",
+      payload: { name: "X" },
+      targetNodeId: "INBOX",
+      source: "test",
+    });
+    // Must NOT resolve to { kind: "retry" } (the old buggy behavior treated this identically to
+    // an apply() failure, making the row eligible for an immediate blind re-apply) — it must
+    // throw, surfacing loudly rather than silently risking a duplicate mutation.
+    await expect(drainOnce(spool, backend, { nowMs: 1 })).rejects.toThrow(/simulated ledger write failure/);
+  }));
 
   test("M3 actual kill after apply then restart reconciles exactly once", async () => {
     const dir = tempDir();

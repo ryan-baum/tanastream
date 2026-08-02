@@ -61,9 +61,14 @@ export async function drainOnce(spool: TanaSpool, backend: TanaBackend, options:
   for (const row of pendingRows) {
     const route = chooseRoute(row, health);
     if (!route) {
+      // Each row's OWN reason is what gets persisted to its hold_reason column — a raw-paste
+      // create held for "Local API unavailable" must never be mislabeled with a different row's
+      // reason (e.g. "Input API unavailable"). firstHoldReason is tracked separately, purely to
+      // give the batch-level DrainResult one representative summary.
+      const reason = holdReason(row, health);
       held += 1;
-      firstHoldReason ||= holdReason(row, health);
-      spool.markHeld(row.id, firstHoldReason, nowMs);
+      firstHoldReason ||= reason;
+      spool.markHeld(row.id, reason, nowMs);
       continue;
     }
 
@@ -96,21 +101,22 @@ export async function drainOnce(spool: TanaSpool, backend: TanaBackend, options:
       // Fail closed: we could not confirm whether this write already landed on a prior attempt —
       // proceeding to apply() now risks a real duplicate. Hold instead (same per-row-held
       // bookkeeping as an unavailable route) and let the next drain tick's reconcile retry; it
-      // costs no attempt budget.
+      // costs no attempt budget. Same per-row-reason discipline as the route-unavailable case above.
+      const reason = `reconcile could not confirm apply state: ${reconciled.error}`;
       held += 1;
-      firstHoldReason ||= `reconcile could not confirm apply state: ${reconciled.error}`;
-      spool.markHeld(row.id, firstHoldReason, nowMs);
+      firstHoldReason ||= reason;
+      spool.markHeld(row.id, reason, nowMs);
       continue;
     }
 
     const claimed = spool.markInflight(row.id, nowMs);
     if (!claimed) return { kind: "stolen", writeId: row.id };
+    if (route === "input") spool.noteAttempt("input", nowMs);
+    if (route === "local") spool.noteAttempt("local", nowMs);
+
+    let applied: ApplyResult;
     try {
-      if (route === "input") spool.noteAttempt("input", nowMs);
-      if (route === "local") spool.noteAttempt("local", nowMs);
-      const applied = await backend.apply(row, route, { nowMs });
-      spool.markApplied(row.id, applied, nowMs);
-      return { kind: "applied", writeId: row.id, route: applied.route };
+      applied = await backend.apply(row, route, { nowMs });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const result = spool.markRetryOrDead(row.id, message, nowMs);
@@ -119,6 +125,15 @@ export async function drainOnce(spool: TanaSpool, backend: TanaBackend, options:
       }
       return { kind: "retry", writeId: row.id, attempts: result.attempts, error: message };
     }
+
+    // The mutation ALREADY SUCCEEDED on Tana's side at this point. A failure writing the ledger
+    // row here must NOT be treated as an apply failure — retrying would risk re-executing a
+    // mutation that already landed. Unlike `create` (which reconcile() can catch via the
+    // idempotency marker on a later attempt), move/field/tag/done/trash have no reconcile path,
+    // so silently permitting a retry here would duplicate a real, already-applied side effect.
+    // Let it propagate uncaught rather than folding it into the apply-failure retry logic.
+    spool.markApplied(row.id, applied, nowMs);
+    return { kind: "applied", writeId: row.id, route: applied.route };
   }
 
   if (held > 0) return { kind: "held", held, reason: firstHoldReason };
