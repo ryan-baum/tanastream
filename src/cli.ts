@@ -68,7 +68,7 @@ async function commandEnqueue(parsed: ParsedArgs): Promise<void> {
     source: stringFlag(parsed, "source") || "tanastream-cli",
     maxAttempts: numberFlag(parsed, "max-attempts"),
   };
-  const spool = openSpool({ dbPath: resolveDbPath(parsed), recoverCorrupt: true });
+  const spool = openSpool({ dbPath: resolveDbPath(parsed), recoverCorrupt: resolveRecoverCorrupt(parsed) });
   try {
     const result = await enqueueWrite(spool, input);
     printJson(result);
@@ -78,7 +78,11 @@ async function commandEnqueue(parsed: ParsedArgs): Promise<void> {
 }
 
 async function commandStatus(parsed: ParsedArgs): Promise<void> {
-  const spool = openSpool({ dbPath: resolveDbPath(parsed), recoverCorrupt: true });
+  // Forge-audit fix (U-10, Finding 4): status is a read-only inspection command — it must NEVER
+  // trigger corruption recovery (a destructive rename) just because someone checked on the queue.
+  // recoverCorrupt is hardcoded false here regardless of any flag; a corrupt spool surfaces as a
+  // loud error from openSpool, which is the correct behavior for a status check.
+  const spool = openSpool({ dbPath: resolveDbPath(parsed), recoverCorrupt: false });
   try {
     const status = spool.status();
     if (parsed.flags.has("no-health")) {
@@ -95,7 +99,7 @@ async function commandStatus(parsed: ParsedArgs): Promise<void> {
 
 async function commandDrain(parsed: ParsedArgs): Promise<void> {
   const dbPath = resolveDbPath(parsed);
-  const spool = openSpool({ dbPath, recoverCorrupt: true });
+  const spool = openSpool({ dbPath, recoverCorrupt: resolveRecoverCorrupt(parsed) });
   const lock = acquireDrainLock(dbPath);
   if (!lock) {
     spool.close();
@@ -122,7 +126,12 @@ async function commandDrain(parsed: ParsedArgs): Promise<void> {
 
 async function commandDaemon(parsed: ParsedArgs): Promise<void> {
   const dbPath = resolveDbPath(parsed);
-  const spool = openSpool({ dbPath, recoverCorrupt: true });
+  // Forge-audit fix (U-10, Finding 4): recovery is gated behind --recover-corrupt everywhere,
+  // including the daemon — an unattended process silently renaming its own data file on a
+  // misclassified transient error is worse than a loud crash a supervisor (launchd/systemd) can
+  // surface. Pass --recover-corrupt explicitly if you've confirmed real corruption and want the
+  // daemon to self-heal past it.
+  const spool = openSpool({ dbPath, recoverCorrupt: resolveRecoverCorrupt(parsed) });
   const lock = acquireDrainLock(dbPath);
   if (!lock) {
     spool.close();
@@ -166,7 +175,7 @@ async function commandDaemon(parsed: ParsedArgs): Promise<void> {
 }
 
 async function commandReconcile(parsed: ParsedArgs): Promise<void> {
-  const spool = openSpool({ dbPath: resolveDbPath(parsed), recoverCorrupt: true });
+  const spool = openSpool({ dbPath: resolveDbPath(parsed), recoverCorrupt: resolveRecoverCorrupt(parsed) });
   try {
     const backend = new RealTanaBackend();
     const reconciled = await reconcileAppliedInput(spool, backend, { batchLimit: numberFlag(parsed, "max") ?? 100 });
@@ -178,7 +187,7 @@ async function commandReconcile(parsed: ParsedArgs): Promise<void> {
 
 async function commandDeadLetter(parsed: ParsedArgs): Promise<void> {
   const subcommand = parsed.positionals[0] || "list";
-  const spool = openSpool({ dbPath: resolveDbPath(parsed), recoverCorrupt: true });
+  const spool = openSpool({ dbPath: resolveDbPath(parsed), recoverCorrupt: resolveRecoverCorrupt(parsed) });
   try {
     if (subcommand === "list") {
       printJson({ dead: spool.deadRows(numberFlag(parsed, "limit") ?? 100) });
@@ -349,6 +358,10 @@ Common flags:
   --max-attempts N         Attempts before dead-letter. Default: 5.
   --db PATH                Override SQLite spool path.
   --local-min-interval-ms N  Min ms between Local-route writes (drain/daemon). Default: 100. 0 disables.
+  --recover-corrupt        Opt in to auto-recovery on a genuinely corrupt spool (renames db+wal+shm
+                            aside, timestamped, never deletes; starts a fresh spool). Off by default
+                            everywhere — a corrupt spool otherwise surfaces as a loud error. Not
+                            accepted by 'status' (read-only; never triggers recovery).
 
 Create flags:
   --name TEXT              Plain node name.
@@ -427,6 +440,12 @@ function requiredFlag(parsed: ParsedArgs, key: string, message: string): string 
 /** Every command resolves --db the same way; extracted to avoid six repeats (simplify pass, U-10). */
 function resolveDbPath(parsed: ParsedArgs): string {
   return stringFlag(parsed, "db") || defaultDbPath();
+}
+
+/** Forge-audit fix (U-10, Finding 4): corruption recovery is destructive (renames the live spool
+ * aside) and is now opt-in per invocation via --recover-corrupt — never a silent default. */
+function resolveRecoverCorrupt(parsed: ParsedArgs): boolean {
+  return parsed.flags.has("recover-corrupt");
 }
 
 function printJson(value: unknown): void {

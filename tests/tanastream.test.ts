@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
@@ -404,7 +404,7 @@ describe("TanaStream adversarial matrix", () => {
     expect(await drainOnce(spool, backend, { nowMs: 1, localMinIntervalMs: 0 })).toMatchObject({ kind: "applied", writeId: low.id });
   }));
 
-  test("M10 corrupt spool file is moved aside and a clean spool starts", () => {
+  test("M10 corrupt spool file is moved aside (timestamped, never deleted) and a clean spool starts", () => {
     const dir = tempDir();
     const dbPath = join(dir, "spool.db");
     writeFileSync(dbPath, "not sqlite");
@@ -412,9 +412,66 @@ describe("TanaStream adversarial matrix", () => {
     try {
       expect(spool.recoveredCorruption).toBe(true);
       expect(spool.status()).toMatchObject({ pending: 0, applied: 0, dead: 0 });
-      expect(existsSync(`${dbPath}.corrupt`)).toBe(true);
+      // Forge-audit fix (U-10, Finding 4): the backup name is now timestamped (spool.db.corrupt-<ISO>),
+      // not a fixed ".corrupt" suffix, so a later corruption event can't clobber this one.
+      const backups = readdirSync(dir).filter((f) => f.startsWith("spool.db.corrupt-"));
+      expect(backups.length).toBe(1);
     } finally {
       spool.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Forge-audit fix (U-10, Finding 4), both directions: (1) WAL/SHM are RENAMED alongside the
+  // main db, never DELETED by our own code — a general property that matters most when corruption
+  // is detected via PRAGMA integrity_check (the open itself succeeds, so the WAL can still hold
+  // real committed content at that point); (2) a SECOND corruption event on a fresh spool must
+  // not destroy the FIRST backup.
+  //
+  // NOTE (genuine finding from writing this test): for the "not a database" structural-failure
+  // class specifically (as opposed to an integrity_check failure on an openable file), SQLite's
+  // OWN `PRAGMA journal_mode = WAL` call truncates -wal to empty and rewrites -shm as a side
+  // effect of the failed open attempt — BEFORE our corruption handler ever runs. So this
+  // reproduction can't assert pre-seeded WAL *content* survives; it asserts the file is RENAMED
+  // (not silently deleted) either way, which is the property our own code controls and Forge
+  // flagged as missing.
+  test("M10b corrupt recovery renames -wal/-shm as backups (never deletes), whatever their content", () => {
+    const dir = tempDir();
+    const dbPath = join(dir, "spool.db");
+    writeFileSync(dbPath, "not sqlite");
+    writeFileSync(`${dbPath}-wal`, "wal contents (may be zeroed by SQLite's own failed-open attempt)");
+    writeFileSync(`${dbPath}-shm`, "shm contents");
+    const spool = openSpool({ dbPath, recoverCorrupt: true });
+    try {
+      const backups = readdirSync(dir);
+      const walBackup = backups.find((f) => f.startsWith("spool.db.corrupt-") && f.endsWith("-wal"));
+      const shmBackup = backups.find((f) => f.startsWith("spool.db.corrupt-") && f.endsWith("-shm"));
+      expect(walBackup).toBeDefined();
+      expect(shmBackup).toBeDefined();
+      // Note: `${dbPath}-wal` legitimately exists again after this point — it's the FRESH spool's
+      // own new WAL file (every WAL-mode SQLite db has one), not the old one; the backup's
+      // existence under the timestamped name is what proves the OLD one was renamed, not deleted.
+    } finally {
+      spool.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("M10c a second corruption event does not destroy the first backup", () => {
+    const dir = tempDir();
+    const dbPath = join(dir, "spool.db");
+    writeFileSync(dbPath, "not sqlite (first corruption)");
+    const spool1 = openSpool({ dbPath, recoverCorrupt: true });
+    spool1.close();
+    // Corrupt the FRESH spool again (a second, later corruption event).
+    writeFileSync(dbPath, "not sqlite (second corruption)");
+    const spool2 = openSpool({ dbPath, recoverCorrupt: true });
+    try {
+      const backups = readdirSync(dir).filter((f) => f.startsWith("spool.db.corrupt-") && !f.endsWith("-wal") && !f.endsWith("-shm"));
+      // Two DISTINCT backup files — the second recovery must not have deleted the first.
+      expect(backups.length).toBe(2);
+    } finally {
+      spool2.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });

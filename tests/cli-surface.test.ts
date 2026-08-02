@@ -1,7 +1,10 @@
 // U-5 (SPEC.md §8): CLI + surface genericization — R-8 (write-only surface, no read-shaped
 // command) and R-2 (zero PAI coupling in the CLI's own output/wording).
+// U-10 (Forge-audit fix, Finding 4): --recover-corrupt gating.
 
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
 
@@ -9,6 +12,10 @@ const CLI = join(import.meta.dir, "..", "tanastream");
 
 function run(args: string[]) {
   return spawnSync(CLI, args, { encoding: "utf8" });
+}
+
+function tempDir() {
+  return mkdtempSync(join(tmpdir(), "tanastream-cli-corrupt-"));
 }
 
 const READ_SHAPED_WORDS = ["read", "search", "query", "get", "list-nodes", "fetch"];
@@ -70,5 +77,69 @@ describe("--version", () => {
     const result = run(["--version"]);
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
+  });
+});
+
+describe("Forge-audit fix (U-10, Finding 4): --recover-corrupt is opt-in, and 'status' never recovers", () => {
+  test("status on a corrupt spool fails LOUD, never auto-recovers, even without the flag", () => {
+    const dir = tempDir();
+    const dbPath = join(dir, "spool.db");
+    try {
+      writeFileSync(dbPath, "not sqlite");
+      const result = run(["status", "--db", dbPath, "--no-health"]);
+      expect(result.status).not.toBe(0);
+      // No corrupt-backup file should have been created — status must never touch the file at all.
+      const backups = readdirSync(dir).filter((f) => f.includes(".corrupt-"));
+      expect(backups.length).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("status STILL never recovers even if --recover-corrupt is (incorrectly) passed", () => {
+    const dir = tempDir();
+    const dbPath = join(dir, "spool.db");
+    try {
+      writeFileSync(dbPath, "not sqlite");
+      const result = run(["status", "--db", dbPath, "--no-health", "--recover-corrupt"]);
+      expect(result.status).not.toBe(0);
+      const backups = readdirSync(dir).filter((f) => f.includes(".corrupt-"));
+      expect(backups.length).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("enqueue on a corrupt spool fails LOUD without --recover-corrupt (no silent default)", () => {
+    const dir = tempDir();
+    const dbPath = join(dir, "spool.db");
+    try {
+      writeFileSync(dbPath, "not sqlite");
+      const result = run(["enqueue", "create", "--db", dbPath, "--name", "N", "--key", "k"]);
+      expect(result.status).not.toBe(0);
+      const backups = readdirSync(dir).filter((f) => f.includes(".corrupt-"));
+      expect(backups.length).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("enqueue WITH --recover-corrupt recovers and succeeds (explicit opt-in works)", () => {
+    const dir = tempDir();
+    const dbPath = join(dir, "spool.db");
+    try {
+      writeFileSync(dbPath, "not sqlite");
+      const result = run(["enqueue", "create", "--db", dbPath, "--name", "N", "--key", "k", "--recover-corrupt"]);
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+      const backups = readdirSync(dir).filter((f) => f.includes(".corrupt-"));
+      expect(backups.length).toBeGreaterThan(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("help documents --recover-corrupt", () => {
+    const result = run(["help"]);
+    expect(result.stdout).toContain("--recover-corrupt");
   });
 });

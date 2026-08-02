@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { existsSync, renameSync, rmSync } from "fs";
+import { existsSync, renameSync } from "fs";
 import { createHash } from "crypto";
 import { ensureParent, defaultDbPath } from "./config";
 import { assertCreateSafe, assertFieldAttributeIdPresent, assertKeySafe, assertTagIdPresent } from "./validate";
@@ -323,16 +323,20 @@ export function openSpool(options: OpenSpoolOptions = {}): TanaSpool {
     }
     // Fail closed: only move the live spool aside on a GENUINE corruption signature.
     // A transient SQLITE_BUSY / IOERR (e.g. two processes opening a fresh spool at once)
-    // must NEVER destroy producer-acked writes — surface it and halt instead.
+    // must NEVER destroy producer-acked writes — surface it and halt instead. AND (Forge-audit
+    // fix, U-10, Finding 4): recovery itself is destructive enough (renames the live spool aside)
+    // that it must never fire just because SOME caller happened to pass recoverCorrupt:true by
+    // default — see cli.ts's --recover-corrupt gate, which is the only place true now originates.
     if (!options.recoverCorrupt || !isCorruptionError(error)) throw error;
-    moveCorruptFiles(dbPath);
+    const backupBase = moveCorruptFiles(dbPath);
     recoveredCorruption = true;
     db = new Database(dbPath, { create: true });
     initialize(db);
+    const spool = new TanaSpool(dbPath, db, recoveredCorruption);
+    spool.event(null, "corruption-recovered", "corrupt spool moved aside (db+wal+shm preserved) and clean spool initialized", { backupBase }, Date.now());
+    return spool;
   }
-  const spool = new TanaSpool(dbPath, db, recoveredCorruption);
-  if (recoveredCorruption) spool.event(null, "corruption-recovered", "corrupt spool moved aside and clean spool initialized", {}, Date.now());
-  return spool;
+  return new TanaSpool(dbPath, db, recoveredCorruption);
 }
 
 /**
@@ -488,11 +492,26 @@ function numberMeta(value: string | null): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function moveCorruptFiles(dbPath: string): void {
-  if (existsSync(`${dbPath}.corrupt`)) rmSync(`${dbPath}.corrupt`, { force: true });
-  if (existsSync(dbPath)) renameSync(dbPath, `${dbPath}.corrupt`);
+/**
+ * Forge-audit fix (U-10, Finding 4): the old version renamed the main db to a FIXED `.corrupt`
+ * name but DELETED `-wal`/`-shm` outright — in WAL mode, the `-wal` file can hold recently
+ * COMMITTED transactions not yet checkpointed into the main file, so a corrupt main-file header
+ * doesn't mean the WAL's contents are also bad; deleting it silently drops producer-acked writes
+ * that might otherwise be forensically recoverable. It also reused that same fixed name every
+ * time, so a SECOND corruption event on a fresh spool `rmSync`'d the FIRST backup before it could
+ * ever be inspected. Both fixed here: all three files are renamed (never deleted) to a
+ * timestamped backup base, so every corruption event keeps its own evidence.
+ */
+function moveCorruptFiles(dbPath: string): string {
+  // A random suffix (not just the millisecond timestamp) guards against two corruption events
+  // landing in the same millisecond — a real possibility, and the exact class of collision that
+  // made the old fixed-name scheme destroy its own prior backup.
+  const unique = `${new Date().toISOString().replace(/[:.]/g, "-")}-${Math.random().toString(36).slice(2, 8)}`;
+  const backupBase = `${dbPath}.corrupt-${unique}`;
+  if (existsSync(dbPath)) renameSync(dbPath, backupBase);
   for (const suffix of ["-wal", "-shm"]) {
     const path = `${dbPath}${suffix}`;
-    if (existsSync(path)) rmSync(path, { force: true });
+    if (existsSync(path)) renameSync(path, `${backupBase}${suffix}`);
   }
+  return backupBase;
 }
