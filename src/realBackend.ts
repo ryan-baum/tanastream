@@ -273,7 +273,13 @@ export class RealTanaBackend implements TanaBackend {
    */
   private async localTagCreate(row: WriteRow): Promise<ApplyResult> {
     const name = requireString(row.payload.name, "name");
-    const workspaceId = await this.defaultWorkspaceId();
+    // An explicit payload.workspace was silently ignored here — the CLI's --workspace flag set it,
+    // but this method always used the auto-detected default workspace regardless. Fixed: honor an
+    // explicit workspace when given, falling back to auto-detection when it isn't.
+    const workspaceId =
+      typeof row.payload.workspace === "string" && row.payload.workspace.trim()
+        ? row.payload.workspace
+        : await this.defaultWorkspaceId();
     const existingId = await this.findExistingTagId(name, workspaceId);
     if (existingId) {
       return { route: "local", targetNodeId: existingId, evidence: { command: "list_tags", tagId: existingId, name, alreadyExisted: true } };
@@ -426,7 +432,13 @@ export class RealTanaBackend implements TanaBackend {
     const response = await this.localRaw(path, init);
     const text = await response.text();
     if (!response.ok) throw new Error(`Local API HTTP ${response.status}: ${text}`);
-    return JSON.parse(text) as T;
+    try {
+      return JSON.parse(text) as T;
+    } catch (error) {
+      // A bare JSON.parse throw here gives no clue which endpoint or body was involved — add both.
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Local API returned a non-JSON 2xx body for ${path}: ${message} (body: ${text.slice(0, 300)})`);
+    }
   }
 
   private async localRaw(path: string, init: RequestInit): Promise<Response> {

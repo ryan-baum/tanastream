@@ -143,3 +143,34 @@ describe("Forge-audit fix (U-10, Finding 4): --recover-corrupt is opt-in, and 's
     expect(result.stdout).toContain("--recover-corrupt");
   });
 });
+
+// Forge-audit fix (U-10, Finding 10): --value was required unconditionally, even for an
+// options-field set via --option-id, which never uses --value at all.
+describe("Forge-audit fix (U-10, Finding 10): field --option-id does not require --value", () => {
+  test("enqueue field --option-id (no --value) succeeds", () => {
+    const dir = tempDir();
+    const dbPath = join(dir, "spool.db");
+    try {
+      const result = run([
+        "enqueue", "field", "--db", dbPath,
+        "--node-id", "n1", "--attribute-id", "attr-1", "--option-id", "opt-1", "--key", "k",
+      ]);
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({ inserted: true });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("enqueue field with NEITHER --value nor --option-id still fails loudly (no over-correction)", () => {
+    const dir = tempDir();
+    const dbPath = join(dir, "spool.db");
+    try {
+      const result = run(["enqueue", "field", "--db", dbPath, "--node-id", "n1", "--attribute-id", "attr-1", "--key", "k"]);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("field requires --value");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

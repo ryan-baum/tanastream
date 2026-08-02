@@ -27,9 +27,25 @@ const LOCK_EX = 2;
 const LOCK_NB = 4;
 const LOCK_UN = 8;
 
-const libc = dlopen(process.platform === "darwin" ? "libSystem.B.dylib" : "libc.so.6", {
-  flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
-});
+type Libc = ReturnType<typeof dlopen<{ flock: { args: [FFIType.i32, FFIType.i32]; returns: FFIType.i32 } }>>;
+let cachedLibc: Libc | null = null;
+
+/**
+ * Lazy-loaded (not at module import time): a bare `dlopen` at the top of this file would run the
+ * instant ANYTHING imports lock.ts — including CLI commands (--version, enqueue, status) that
+ * never touch the drain lock at all. Deferring it means those commands work even on a platform
+ * this covers only Darwin and glibc Linux by name (musl Linux, e.g. Alpine, is NOT covered) — the
+ * failure now happens only when something actually TRIES to acquire the lock, with the real error
+ * surfacing right there, rather than on import of an unrelated command.
+ */
+function libc(): Libc {
+  if (!cachedLibc) {
+    cachedLibc = dlopen(process.platform === "darwin" ? "libSystem.B.dylib" : "libc.so.6", {
+      flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+    });
+  }
+  return cachedLibc;
+}
 
 export function acquireDrainLock(dbPath: string): DrainLock | null {
   const lockPath = `${dbPath}.lock`;
@@ -42,7 +58,7 @@ export function acquireDrainLock(dbPath: string): DrainLock | null {
   } catch {
     return null; // cannot open the lock file (e.g. the spool dir is gone) — refuse, fail-closed
   }
-  const rc = libc.symbols.flock(fd, LOCK_EX | LOCK_NB);
+  const rc = libc().symbols.flock(fd, LOCK_EX | LOCK_NB);
   if (rc !== 0) {
     closeSync(fd); // a live holder owns the advisory lock — refuse (fail-closed)
     return null;
@@ -53,7 +69,7 @@ export function acquireDrainLock(dbPath: string): DrainLock | null {
       if (released) return;
       released = true;
       try {
-        libc.symbols.flock(fd, LOCK_UN);
+        libc().symbols.flock(fd, LOCK_UN);
       } catch {
         /* best-effort; closing the fd releases the lock anyway */
       }

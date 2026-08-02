@@ -238,14 +238,20 @@ function payloadFromArgs(op: OpType, parsed: ParsedArgs): Record<string, unknown
         checkbox: parsed.flags.has("checkbox"),
         workspace: stringFlag(parsed, "workspace"),
       };
-    case "field":
+    case "field": {
+      // --value was required unconditionally, even when --option-id was given instead — an
+      // options-field set (`--option-id X`, no --value) failed with a confusing "field requires
+      // --value" error despite being correctly specified. --value is only required when
+      // --option-id is absent.
+      const optionId = stringFlag(parsed, "option-id");
       return {
         nodeId: requiredFlag(parsed, "node-id", "field requires --node-id"),
         fieldName: stringFlag(parsed, "field") || stringFlag(parsed, "field-name"),
         attributeId: stringFlag(parsed, "attribute-id"),
-        value: requiredFlag(parsed, "value", "field requires --value"),
-        optionId: stringFlag(parsed, "option-id"),
+        value: optionId ? stringFlag(parsed, "value") : requiredFlag(parsed, "value", "field requires --value (or --option-id for an options field)"),
+        optionId,
       };
+    }
     case "trash":
       return { nodeId: requiredFlag(parsed, "node-id", "trash requires --node-id") };
     case "done":

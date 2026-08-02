@@ -378,6 +378,25 @@ describe("R-5: tag-create via create_tag + list_tags readback", () => {
       cleanup();
     }
   });
+
+  // Forge-audit fix (U-10, Finding 9): an explicit payload.workspace (set by the CLI's --workspace
+  // flag) was silently ignored — localTagCreate always used the auto-detected default workspace.
+  test("an explicit payload.workspace is honored, not silently overridden by auto-detection", async () => {
+    const { backend, cleanup } = makeBackend();
+    try {
+      tags = [{ id: "scoped-id", name: "ScopedTag" }];
+      tagAppearsAfterNCreateCalls = 0; // visible immediately -> the fast "already exists" path
+      const row = rowFor("tag-create", "tc5", { name: "ScopedTag", workspace: "explicit-ws" });
+      const result = await backend.apply(row, "local", { nowMs: Date.now() });
+      expect(result.targetNodeId).toBe("scoped-id");
+      // The important assertion: the list_tags pre-check used the EXPLICIT workspace, never the
+      // auto-detected "ws1" default (confirmed live via /workspaces in makeBackend's mock).
+      expect(lastMcpCall?.name).toBe("list_tags");
+      expect(lastMcpCall?.arguments.workspaceId).toBe("explicit-ws");
+    } finally {
+      cleanup();
+    }
+  });
 });
 
 describe("R-6: the full /mcp failure contract (verifier, both directions)", () => {
@@ -494,6 +513,33 @@ describe("R-5/KTD-1: trash — REST-primary, 400-already-in-trash idempotent (R-
       await expect(backend.trashNode("does-not-exist")).rejects.toThrow();
     } finally {
       cleanup();
+    }
+  });
+});
+
+// Forge-audit fix (U-10, Finding 14): a bare JSON.parse throw on a non-JSON 2xx REST body gave no
+// clue which endpoint/body was involved. Uses its own standalone mock (a REST 2xx-with-garbage-body
+// is a different failure shape than anything the shared mock server already models).
+describe("Forge-audit fix (U-10, Finding 14): a non-JSON 2xx REST body gives a contextual error", () => {
+  test("readNode on a 2xx body that isn't valid JSON names the path and includes the body", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const url = new URL(req.url);
+        if (url.pathname === "/health") return Response.json({ status: "ok" });
+        // 2xx status, but the body is not valid JSON (e.g. a misconfigured proxy in front of Tana).
+        return new Response("<html>not json</html>", { status: 200 });
+      },
+    });
+    const dir = mkdtempSync(join(tmpdir(), "tanastream-nonjson-"));
+    const configPath = join(dir, "config.json");
+    writeFileSync(configPath, JSON.stringify({ localApi: { enabled: true, endpoint: `http://127.0.0.1:${server.port}`, bearerToken: "t" } }));
+    try {
+      const backend = new RealTanaBackend({ configPath });
+      await expect(backend.readNode("n1")).rejects.toThrow(/non-JSON.*nodes\/n1/);
+    } finally {
+      server.stop(true);
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
