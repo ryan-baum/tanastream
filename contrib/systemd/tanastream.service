@@ -1,0 +1,32 @@
+# Example systemd user unit for tanastream — a documented starting point, not an installer
+# (there's no install script for this one; systemd setups vary too much by distro/user-vs-system
+# scope to script generically). Edit the two paths below, then:
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp contrib/systemd/tanastream.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now tanastream
+#   journalctl --user -u tanastream -f
+#
+# Requires bun on PATH for the user the unit runs as. Config resolution is unchanged (KTD-2):
+# TANASTREAM_ENDPOINT/TANASTREAM_TOKEN env vars, or ~/.config/tanastream/config.json.
+
+[Unit]
+Description=tanastream - durable single-writer Tana write queue
+After=network.target
+
+[Service]
+Type=simple
+# EDIT: absolute path to your tanastream checkout
+WorkingDirectory=/path/to/tanastream
+# EDIT: same path as above
+ExecStart=/usr/bin/env bun /path/to/tanastream/src/cli.ts daemon --verbose
+Restart=on-failure
+RestartSec=5
+Environment=HOME=%h
+# Uncomment and fill in for env-based config instead of a config.json file:
+# Environment=TANASTREAM_ENDPOINT=http://127.0.0.1:8262
+# Environment=TANASTREAM_TOKEN=your-local-api-bearer-token
+
+[Install]
+WantedBy=default.target
