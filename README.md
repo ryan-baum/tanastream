@@ -151,6 +151,17 @@ TANASTREAM_LIVE_SMOKE=1 bun test tests/live-smoke.test.ts   # one opt-in test ag
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the outbox pattern, route selection, and
 per-operation transport details.
 
+## Authorship & provenance
+
+This codebase was written by AI agents under human direction, and it's worth being plain about
+that. The implementation was built by Claude (Anthropic) — spec and orchestration by one Claude
+model, code by another — with independent pre-publish audits by two non-Anthropic models. Ryan
+Baum directed the work, made the design calls, reviewed the results, and ran the live
+verification, but did not hand-write the code: if you ask a deep question about a specific line,
+the honest answer is that an agent wrote it and a human accepted it. The full test suite, the
+audit findings, and this repo's commit history are the receipts. Issues and PRs welcome — they
+get the same human-plus-agent review loop.
+
 ## License
 
 MIT — see [`LICENSE`](LICENSE).

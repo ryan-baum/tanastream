@@ -4,6 +4,9 @@
   "description": "A durable, single-writer write queue for Tana's Local API",
   "license": "MIT",
   "author": "Ryan Baum",
+  "contributors": [
+    "Claude (Anthropic) <noreply@anthropic.com> (implementation)"
+  ],
   "type": "module",
   "repository": {
     "type": "git",
