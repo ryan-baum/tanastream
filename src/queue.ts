@@ -6,7 +6,7 @@ import { DEFAULT_LOCAL_MIN_INTERVAL_MS } from "./config";
 export interface DrainOptions {
   nowMs?: number;
   batchLimit?: number;
-  /** KTD-4 (R-7): min ms between Local-route write applies. Defaults to DEFAULT_LOCAL_MIN_INTERVAL_MS; 0 disables. */
+  /** Min ms between Local-route write applies. Defaults to DEFAULT_LOCAL_MIN_INTERVAL_MS; 0 disables. */
   localMinIntervalMs?: number;
 }
 
@@ -15,9 +15,8 @@ const INPUT_MAX_CHARS = 5_000;
 
 /**
  * Shared clamp math for both route pacing gates (Input: fixed 1s; Local: configurable via
- * DrainOptions.localMinIntervalMs). Byte-identical arithmetic to what each gate had inline before
- * this extraction (simplify pass, U-10): elapsed clamps to >=0 so a backwards clock cannot produce
- * a negative-elapsed, over-interval sleep; the returned sleep clamps to [0, intervalMs].
+ * DrainOptions.localMinIntervalMs). Elapsed clamps to >=0 so a backwards clock cannot produce a
+ * negative-elapsed, over-interval sleep; the returned sleep clamps to [0, intervalMs].
  * Returns null when clear to proceed (interval disabled, no prior attempt, or interval elapsed).
  */
 function nextRateLimitSleep(lastAttemptAt: number, intervalMs: number, nowMs: number): number | null {
@@ -82,7 +81,7 @@ export async function drainOnce(spool: TanaSpool, backend: TanaBackend, options:
     }
 
     if (route === "local") {
-      // KTD-4/R-7: localMinIntervalMs: 0 disables the gate entirely (nextRateLimitSleep's own guard).
+      // localMinIntervalMs: 0 disables the gate entirely (nextRateLimitSleep's own guard).
       const localMinIntervalMs = options.localMinIntervalMs ?? DEFAULT_LOCAL_MIN_INTERVAL_MS;
       const localSleepMs = nextRateLimitSleep(spool.lastAttemptAt("local") ?? 0, localMinIntervalMs, nowMs);
       if (localSleepMs !== null) return { kind: "rate_limited", sleepMs: localSleepMs };
@@ -94,10 +93,10 @@ export async function drainOnce(spool: TanaSpool, backend: TanaBackend, options:
       return { kind: "applied", writeId: row.id, route: reconciled.result.route, reconciled: true };
     }
     if (reconciled.status === "unknown") {
-      // Forge-audit fix (U-10, Finding 2): fail closed. We could not confirm whether this write
-      // already landed on a prior attempt — proceeding to apply() now risks a real duplicate.
-      // Hold instead (same per-row-held bookkeeping as an unavailable route) and let the next
-      // drain tick's reconcile retry; it costs no attempt budget.
+      // Fail closed: we could not confirm whether this write already landed on a prior attempt —
+      // proceeding to apply() now risks a real duplicate. Hold instead (same per-row-held
+      // bookkeeping as an unavailable route) and let the next drain tick's reconcile retry; it
+      // costs no attempt budget.
       held += 1;
       firstHoldReason ||= `reconcile could not confirm apply state: ${reconciled.error}`;
       spool.markHeld(row.id, firstHoldReason, nowMs);
@@ -148,11 +147,11 @@ function holdReason(row: WriteRow, health: { localAvailable: boolean; inputAvail
 }
 
 /**
- * Forge-audit fix (U-10, Finding 2): the old contract (`T | null`, catching every exception into
- * null) could not distinguish "definitively not found" from "couldn't tell due to a transport
- * failure" — both collapsed to the same falsy value, and every caller treated "falsy" as license
- * to proceed toward apply(). A genuine transport failure now surfaces as `status: "unknown"`
- * instead, so callers can fail closed (hold, don't apply) rather than risking a duplicate.
+ * A plain `T | null` contract (catching every exception into null) can't distinguish
+ * "definitively not found" from "couldn't tell due to a transport failure" — both would collapse
+ * to the same falsy value, and a caller could easily treat "falsy" as license to proceed toward
+ * apply(). A genuine transport failure surfaces as `status: "unknown"` instead, so callers can
+ * fail closed (hold, don't apply) rather than risking a duplicate.
  */
 type ReconcileOutcome = { status: "found"; result: ApplyResult } | { status: "not-found" } | { status: "unknown"; error: string };
 

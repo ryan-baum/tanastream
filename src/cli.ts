@@ -78,10 +78,10 @@ async function commandEnqueue(parsed: ParsedArgs): Promise<void> {
 }
 
 async function commandStatus(parsed: ParsedArgs): Promise<void> {
-  // Forge-audit fix (U-10, Finding 4): status is a read-only inspection command — it must NEVER
-  // trigger corruption recovery (a destructive rename) just because someone checked on the queue.
-  // recoverCorrupt is hardcoded false here regardless of any flag; a corrupt spool surfaces as a
-  // loud error from openSpool, which is the correct behavior for a status check.
+  // status is a read-only inspection command — it must NEVER trigger corruption recovery (a
+  // destructive rename) just because someone checked on the queue. recoverCorrupt is hardcoded
+  // false here regardless of any flag; a corrupt spool surfaces as a loud error from openSpool,
+  // which is the correct behavior for a status check.
   const spool = openSpool({ dbPath: resolveDbPath(parsed), recoverCorrupt: false });
   try {
     const status = spool.status();
@@ -126,11 +126,10 @@ async function commandDrain(parsed: ParsedArgs): Promise<void> {
 
 async function commandDaemon(parsed: ParsedArgs): Promise<void> {
   const dbPath = resolveDbPath(parsed);
-  // Forge-audit fix (U-10, Finding 4): recovery is gated behind --recover-corrupt everywhere,
-  // including the daemon — an unattended process silently renaming its own data file on a
-  // misclassified transient error is worse than a loud crash a supervisor (launchd/systemd) can
-  // surface. Pass --recover-corrupt explicitly if you've confirmed real corruption and want the
-  // daemon to self-heal past it.
+  // Recovery is gated behind --recover-corrupt everywhere, including the daemon — an unattended
+  // process silently renaming its own data file on a misclassified transient error is worse than
+  // a loud crash a supervisor (launchd/systemd) can surface. Pass --recover-corrupt explicitly if
+  // you've confirmed real corruption and want the daemon to self-heal past it.
   const spool = openSpool({ dbPath, recoverCorrupt: resolveRecoverCorrupt(parsed) });
   const lock = acquireDrainLock(dbPath);
   if (!lock) {
@@ -152,8 +151,8 @@ async function commandDaemon(parsed: ParsedArgs): Promise<void> {
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 
-  // OPS-1: a verbose 24/7 daemon logged a full status JSON on every idle tick (~43k lines/day at a 2s
-  // poll), growing the launchd StandardOutPath without bound. Log actionable ticks immediately, but
+  // A verbose 24/7 daemon logging a full status JSON on every idle tick (~43k lines/day at a 2s
+  // poll) grows an unbounded log file. Log actionable ticks immediately, but
   // throttle idle/held/rate_limited to one heartbeat per heartbeatMs. The drain logic below is unchanged.
   let lastTickLogMs = 0;
   while (true) {
@@ -369,8 +368,8 @@ Create flags:
   --child TEXT             Repeatable child text.
   --no-marker              Disable visible TanaStreamIdempotency child.
 
-tag/field flags (SPEC KTD-9): --tag and --attribute-id take Tana node/attribute IDs, never
-names — find them via Tana's node context menu ("Copy ID") or supertag-cli's schema tools.
+tag/field flags: --tag and --attribute-id take Tana node/attribute IDs, never names — find
+them via Tana's node context menu ("Copy ID") or supertag-cli's schema tools.
 `);
 }
 
@@ -389,7 +388,7 @@ function isOpType(value: unknown): value is OpType {
 
 /** Fail closed: a value-expecting flag parsed as a bare boolean means its value was dropped
  * (e.g. `--name -5` where `-5` was not consumed). Never silently default — error clearly. Shared
- * by stringFlag and listFlag (simplify pass, U-10; both threw the identical message). */
+ * by stringFlag and listFlag (both used to throw this identical message independently). */
 function assertValueFlag(value: string | boolean | (string | boolean)[] | undefined, key: string): void {
   if (value === true) {
     throw new Error(`--${key} expects a value; for a value starting with '-', use --${key}=value`);
@@ -437,13 +436,13 @@ function requiredFlag(parsed: ParsedArgs, key: string, message: string): string 
   return value;
 }
 
-/** Every command resolves --db the same way; extracted to avoid six repeats (simplify pass, U-10). */
+/** Every command resolves --db the same way; extracted to avoid six repeats. */
 function resolveDbPath(parsed: ParsedArgs): string {
   return stringFlag(parsed, "db") || defaultDbPath();
 }
 
-/** Forge-audit fix (U-10, Finding 4): corruption recovery is destructive (renames the live spool
- * aside) and is now opt-in per invocation via --recover-corrupt — never a silent default. */
+/** Corruption recovery is destructive (renames the live spool aside) and is opt-in per invocation
+ * via --recover-corrupt — never a silent default. */
 function resolveRecoverCorrupt(parsed: ParsedArgs): boolean {
   return parsed.flags.has("recover-corrupt");
 }

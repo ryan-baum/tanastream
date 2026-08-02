@@ -115,11 +115,10 @@ leaves headroom for other readers on the same API. Override with `--local-min-in
 ## Tag and field IDs
 
 `tag` and `field` operations need a tanastream tag ID (`--tag`) or field attribute ID
-(`--attribute-id`) — never a name. This is a deliberate limitation of running standalone: the
-original PAI-internal build could resolve names to IDs through supertag-cli's synced local index,
-which doesn't exist in a standalone install. Find the ID you need via Tana's node context menu
-("Copy ID") on the tag or field definition, or via `supertag-cli`'s own schema tools if you have it
-installed.
+(`--attribute-id`) — never a name. This is a deliberate limitation: a standalone install has no
+local name-resolution index (the kind a synced CLI tool might maintain), so name-to-ID lookup isn't
+available here. Find the ID you need via Tana's node context menu ("Copy ID") on the tag or field
+definition, or via `supertag-cli`'s own schema tools if you have it installed.
 
 ## Companion tool
 

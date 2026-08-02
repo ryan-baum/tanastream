@@ -12,7 +12,7 @@ function resolvedHomeDir(): string {
 }
 
 /**
- * KTD-2 (SPEC.md): own config discovery. Precedence, evaluated in order:
+ * Own config discovery. Precedence, evaluated in order:
  *   1. TANASTREAM_ENDPOINT / TANASTREAM_TOKEN env vars
  *   2. ~/.config/tanastream/config.json (or TANASTREAM_CONFIG override)
  *   3. ~/.config/supertag/config.json — explicit fallback, logged when used
@@ -43,10 +43,11 @@ export interface ResolvedConfig extends TanaStreamConfig {
 export const DEFAULT_LOCAL_ENDPOINT = "http://127.0.0.1:8262";
 
 /**
- * KTD-4 (SPEC.md): pacing is first-class, default on. 100ms (~10 writes/s) sits comfortably under
- * the measured ~12/s server ceiling (2026-08-01 stress test), so default pacing costs ~0 throughput
- * while leaving read headroom (bursts stall other readers ~25x — see TanaWritePathDoctrine). `0`
- * disables it. Overridable via TANASTREAM_LOCAL_MIN_INTERVAL_MS or an explicit CLI/caller value.
+ * Pacing is first-class, default on. 100ms (~10 writes/s) sits comfortably under Tana's Local
+ * API's measured ~12/s server-side write ceiling, so default pacing costs ~0 throughput while
+ * leaving read headroom (a write burst was measured to stall other readers on the same API by
+ * roughly 25x). `0` disables it. Overridable via TANASTREAM_LOCAL_MIN_INTERVAL_MS or an explicit
+ * CLI/caller value.
  */
 export const DEFAULT_LOCAL_MIN_INTERVAL_MS = 100;
 
@@ -109,8 +110,8 @@ function readConfigFile(path: string): TanaStreamConfig {
 
 /**
  * Load a config file directly at an explicit path, bypassing discovery
- * precedence entirely (used by callers — e.g. tests, `--config` flag —
- * that already know exactly which file they want).
+ * precedence entirely (used by callers — e.g. tests — that already know
+ * exactly which file they want).
  */
 export function loadConfigAt(path: string): TanaStreamConfig {
   if (!existsSync(path)) return {};
@@ -118,8 +119,8 @@ export function loadConfigAt(path: string): TanaStreamConfig {
 }
 
 /**
- * Resolve config per the KTD-2 precedence. Throws ConfigError (naming the
- * file to create) when nothing is found.
+ * Resolve config per the precedence documented above. Throws ConfigError
+ * (naming the file to create) when nothing is found.
  */
 export function resolveConfig(explicitPath?: string): ResolvedConfig {
   if (explicitPath) {

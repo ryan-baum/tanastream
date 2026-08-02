@@ -1,4 +1,4 @@
-// F1 — Tana-Paste injection guard (reject-loud, opt-in raw).
+// Tana-Paste injection guard (reject-loud, opt-in raw).
 //
 // The Local API create path is Tana-Paste-only (no structured literal-create endpoint), so
 // user content containing Tana Paste control syntax gets reinterpreted: `::` -> field,
@@ -43,11 +43,11 @@ export function findTanaHazard(text: string): string | null {
  * a hazard — under EITHER opt-out: a literal pre-formatted `tanaPaste` string, or `rawTanaPaste:
  * true` (build the paste from the structured fields as usual, but don't hazard-check them, and
  * don't assume they land literally afterward). Exported so realBackend.ts's marker/literal-
- * verification logic uses the SAME predicate this validator does — a Forge-audit finding (U-10):
- * both previously tested only `typeof tanaPaste === "string"`, so a `rawTanaPaste:true` payload
- * with no `tanaPaste` string skipped the denylist here but still got marker + literal
- * verification downstream, which fails against content Tana legitimately reinterpreted —
- * orphan-duplicating up to maxAttempts (the BUG-2 amplification class).
+ * verification logic uses the SAME predicate this validator does: both used to test only
+ * `typeof tanaPaste === "string"`, so a `rawTanaPaste:true` payload with no `tanaPaste` string
+ * skipped the denylist here but still got marker + literal verification downstream, which fails
+ * against content Tana legitimately reinterpreted — retrying the create over and over until it
+ * dead-letters, minting a duplicate (misparsed) node on every attempt along the way.
  */
 export function isRaw(payload: CreateContent): boolean {
   return typeof payload.tanaPaste === "string" || payload.rawTanaPaste === true;
@@ -90,8 +90,8 @@ export function assertCreateSafe(payload: CreateContent): void {
  * leading/trailing/repeated/control whitespace that Tana collapses or trims in the marker read-back.
  * The on-node marker is `PREFIX + dedupKey`; if the key is not collapse-stable, the written marker
  * never equals the collapsed read-back, verification fails on every attempt, and the create
- * orphan-duplicates up to maxAttempts (the BUG-2 amplification class at the key seam). Auto-hash keys
- * are hex and always pass; only explicit producer keys need this check. Call for create ops only.
+ * retries into a duplicate on every attempt until it dead-letters. Auto-hash keys are hex and
+ * always pass; only explicit producer keys need this check. Call for create ops only.
  */
 export function assertKeySafe(idempotencyKey: string): void {
   const collapsed = idempotencyKey.replace(/\s+/g, " ").trim();
@@ -105,10 +105,10 @@ export function assertKeySafe(idempotencyKey: string): void {
 }
 
 /**
- * KTD-9 (SPEC.md): the standalone tool has no local name-resolution index the way supertag's
- * subprocess did (it kept a synced index of tag/field names -> IDs). The public MCP `tag` tool
- * requires `tagIds`; a name-only payload would fail opaquely against that schema at apply time.
- * Reject loudly at enqueue instead, naming how to find the ID. Call for "tag" ops only.
+ * The standalone tool has no local name-resolution index the way a synced CLI companion tool
+ * might (e.g. one that keeps an index of tag/field names -> IDs). Tana's `tag` MCP tool requires
+ * `tagIds`; a name-only payload would fail opaquely against that schema at apply time. Reject
+ * loudly at enqueue instead, naming how to find the ID. Call for "tag" ops only.
  */
 export function assertTagIdPresent(payload: Record<string, unknown>): void {
   if (typeof payload.tagId === "string" && payload.tagId.trim().length > 0) return;
@@ -120,8 +120,8 @@ export function assertTagIdPresent(payload: Record<string, unknown>): void {
 }
 
 /**
- * KTD-9 (SPEC.md): same reasoning as assertTagIdPresent — the public MCP `set_field_content` /
- * `set_field_option` tools require `attributeId`, not a field name. Call for "field" ops only.
+ * Same reasoning as assertTagIdPresent — Tana's `set_field_content` / `set_field_option` MCP
+ * tools require `attributeId`, not a field name. Call for "field" ops only.
  */
 export function assertFieldAttributeIdPresent(payload: Record<string, unknown>): void {
   if (typeof payload.attributeId === "string" && payload.attributeId.trim().length > 0) return;

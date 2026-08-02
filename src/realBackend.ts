@@ -39,13 +39,13 @@ export class RealTanaBackend implements TanaBackend {
   }
 
   /**
-   * Forge-audit fix (U-10, Finding 2): a transport failure DURING reconcile must never resolve to
-   * a definitive "not found" — that would let the caller (queue.ts's drainOnce) proceed to
-   * `apply()` a write that may already have landed, creating a real duplicate. The listing GET is
-   * no longer caught here (it propagates); a per-candidate read failure no longer silently
-   * `continue`s past a node that might have BEEN the marker — it's tracked, and if the search
-   * completes without a definitive match while any candidate read failed, this throws instead of
-   * returning null. Only a clean sweep with zero read failures returns a reliable null.
+   * A transport failure DURING reconcile must never resolve to a definitive "not found" — that
+   * would let the caller (queue.ts's drainOnce) proceed to `apply()` a write that may already
+   * have landed, creating a real duplicate. The listing GET is not caught here (it propagates);
+   * a per-candidate read failure doesn't silently `continue` past a node that might have BEEN
+   * the marker — it's tracked, and if the search completes without a definitive match while any
+   * candidate read failed, this throws instead of returning null. Only a clean sweep with zero
+   * read failures returns a reliable null.
    */
   async reconcile(row: WriteRow): Promise<ApplyResult | null> {
     if (row.opType !== "create") return null;
@@ -56,7 +56,7 @@ export class RealTanaBackend implements TanaBackend {
     const targetNodeId = await this.resolveLocalTarget(row.targetNodeId || this.config.defaultTargetNode || "INBOX");
     // Compare against the STORED name, which Tana whitespace-collapses (oneLine) at create time.
     // Matching the raw payload name would skip the marker node for any multi-space / edge-whitespace
-    // title and silently re-create it on crash-replay (the BUG-2 / 25-orphan class at a new seam).
+    // title and silently re-create it on crash-replay (an orphan-duplicate class at this seam).
     const expectedName = typeof row.payload.name === "string" ? oneLine(row.payload.name) : null;
     // Paginate: a single limit=1000 GET misses a marker node that sorts past child #1000. The
     // seen-id + no-progress guards keep this safe (and terminating) even if the API ignores offset.
@@ -110,9 +110,8 @@ export class RealTanaBackend implements TanaBackend {
   }
 
   /**
-   * REST-primary (R-5/KTD-1): the subprocess fallback is gone (R-4). Same idempotent-success
-   * exception as before — a 400 containing "already in trash" counts as success (R-6's sole
-   * REST exception to the "non-2xx = failed" rule).
+   * REST-primary — no subprocess fallback. A 400 containing "already in trash" counts as success
+   * (the sole exception to the "non-2xx = failed" rule).
    */
   async trashNode(nodeId: string): Promise<ApplyResult> {
     const direct = await this.localRaw(`/nodes/${encodeURIComponent(nodeId)}/trash`, {
@@ -169,13 +168,13 @@ export class RealTanaBackend implements TanaBackend {
     const read = await this.readNode(created.id, 3);
     const marker = markerFor(row);
     if (marker && !markerMatches(read.markdown, row)) throw new Error("Local create verification failed: idempotency marker missing");
-    // F1 backstop: for structured creates, verify the node landed LITERALLY (name + each child).
+    // Backstop: for structured creates, verify the node landed LITERALLY (name + each child).
     // This catches any Tana Paste misparse the enqueue-time denylist missed (e.g. an unknown
     // control sequence) — it converts silent corruption into a loud dead-letter.
-    // Raw paste (isRaw, not just a literal tanaPaste string — Forge-audit fix, U-10) opts out:
-    // rawTanaPaste:true means Tana Paste syntax in name/description/children is INTENTIONAL, so
-    // the read-back is expected to differ from the literal payload (that's the whole point), and
-    // this literal-equality check would misfire as a false "misparse" on every legitimate use.
+    // Raw paste (isRaw — not just a literal tanaPaste string) opts out: rawTanaPaste:true means
+    // Tana Paste syntax in name/description/children is INTENTIONAL, so the read-back is expected
+    // to differ from the literal payload (that's the whole point), and this literal-equality
+    // check would misfire as a false "misparse" on every legitimate use.
     if (!isRaw(row.payload)) {
       const expectedName = typeof row.payload.name === "string" ? oneLine(row.payload.name) : null;
       if (expectedName !== null && read.name !== expectedName) {
@@ -211,13 +210,11 @@ export class RealTanaBackend implements TanaBackend {
   }
 
   /**
-   * SPEC-DEFECT E-1 (see BUILD-LEDGER.md): SPEC.md §4's "Key shapes" gloss for `edit_node` reads
-   * `edit_node{nodeId!, name, description}` (plain string set), but the captured live schema in
-   * mcp-tools-list.json actually requires search-and-replace objects
-   * (`name: {old_string, new_string, replace_all?}`). REST `/nodes/{id}/update` — also proven live
-   * in §4's endpoint list ("name; description per stress report") and named as KTD-1's parenthetical
-   * alternative ("edit"→"edit_node" (or REST `/update`)) — takes a plain `{name, description}` body
-   * and needs no read-before-write, so it is used here as primary; `edit_node` is not called at all.
+   * `edit` uses REST `POST /nodes/{id}/update` rather than the `/mcp` `edit_node` tool. Tana's
+   * `edit_node` tool takes `name`/`description` as search-and-replace objects
+   * (`{old_string, new_string, replace_all?}`), not a plain field set — REST `/update` takes the
+   * plain `{name, description}` body this code actually wants, with no read-before-write needed,
+   * so it's used as primary and `edit_node` is never called.
    */
   private async localEdit(row: WriteRow): Promise<ApplyResult> {
     const nodeId = requireString(row.payload.nodeId ?? row.targetNodeId, "nodeId");
@@ -228,8 +225,8 @@ export class RealTanaBackend implements TanaBackend {
     if (wantDescription !== undefined) body.description = wantDescription;
     await this.localJson(`/nodes/${encodeURIComponent(nodeId)}/update`, { method: "POST", body: JSON.stringify(body) });
 
-    // STRONGER than the old subprocess path (§16): assert the read-back equals what was requested,
-    // whitespace-normalized. The old path read but never asserted.
+    // Assert the read-back equals what was requested, whitespace-normalized — don't just read it
+    // and hope; a silent no-op write would otherwise mark applied without actually landing.
     const read = await this.readNode(nodeId, 1);
     if (wantName !== undefined) {
       const got = typeof read.name === "string" ? oneLine(read.name) : null;
@@ -247,15 +244,16 @@ export class RealTanaBackend implements TanaBackend {
   }
 
   /**
-   * KTD-9: tag/field ops require an ID, never a name — the standalone tool has no local
-   * name-resolution index (enforced loudly at enqueue by validate.ts's assertTagIdPresent, but
-   * re-checked here as defense-in-depth against a caller that enqueues directly via the spool API).
+   * tag/field ops require an ID, never a name — the standalone tool has no local name-resolution
+   * index (enforced loudly at enqueue by validate.ts's assertTagIdPresent, but re-checked here as
+   * defense-in-depth against a caller that enqueues directly via the spool API, bypassing that
+   * check).
    *
-   * Verification fallback rule (§16): no VERIFIED evidence in this session's context capsule that
-   * tag membership renders in `/nodes/{id}` read-back markdown — asserting an unverified rendering
-   * property risks false-negatives on legitimate applies. Stays at isError-false + re-read-ok
-   * (= old subprocess-path strength). DEFERRED-VERIFY: a live smoke would confirm whether tags
-   * render, at which point the STRONGER per-tag assertion could be added.
+   * Verification stays at isError-false + re-read-ok rather than asserting that tag membership is
+   * visible in `/nodes/{id}` read-back markdown — that rendering behavior hasn't been confirmed
+   * against a live Tana instance, and asserting an unconfirmed property risks false-negatives on
+   * legitimate applies. A live-verified confirmation would let this become a stronger per-tag
+   * assertion (see tests/live-smoke.test.ts).
    */
   private async localTag(row: WriteRow): Promise<ApplyResult> {
     const nodeId = requireString(row.payload.nodeId ?? row.targetNodeId, "nodeId");
@@ -266,12 +264,12 @@ export class RealTanaBackend implements TanaBackend {
   }
 
   /**
-   * KTD-1: create_tag, then confirm via list_tags readback (retry budget 20x100ms, mirrors the old
-   * subprocess path's own retry loop). Implementation-defined: uses list_tags exclusively rather
-   * than get_tag_schema+list_tags (§16 names both joined by "/" — read as OR) because list_tags
-   * alone returns {id, name} pairs sufficient for both the pre-existence check and the post-create
-   * readback, with no dependency on parsing create_tag's own response content shape (unverified in
-   * this session — mcp-tools-list.json captured tool SCHEMAS, not example tool RESULTS).
+   * create_tag, then confirm via a list_tags readback (retry budget 20x100ms — the tag may take a
+   * moment to become visible after creation). Uses list_tags exclusively rather than also calling
+   * get_tag_schema, because list_tags alone returns {id, name} pairs sufficient for both the
+   * pre-existence check and the post-create readback, with no dependency on parsing create_tag's
+   * own response content shape (which this codebase has never observed against a live server —
+   * only the tool's input schema was captured, not an example result).
    */
   private async localTagCreate(row: WriteRow): Promise<ApplyResult> {
     const name = requireString(row.payload.name, "name");
@@ -298,14 +296,12 @@ export class RealTanaBackend implements TanaBackend {
   }
 
   /**
-   * U-10 simplify-pass hardening (ALTITUDE finding, HIGH): parseMcpJson's `null` means "this
-   * session doesn't know how to parse the response," NOT "no tags exist." The original code
-   * collapsed both into an empty array (`?? []`), which — on a persistent parse mismatch — would
-   * make `localTagCreate`'s pre-existence check always report "not found" and call `create_tag`
-   * again on every run, silently minting a duplicate tag each time (the exact failure class R-6's
-   * isError-not-status posture exists to prevent, one level up). A genuinely empty tags array is
-   * still a valid "not found" signal (`tags.find(...)` naturally returns undefined -> null below);
-   * only an UNPARSEABLE response — a real ambiguity, not an absence — throws.
+   * parseMcpJson's `null` means "this code doesn't know how to parse the response," NOT "no tags
+   * exist" — collapsing both into an empty array would make the pre-existence check below always
+   * report "not found" on a persistent parse mismatch and call `create_tag` again on every run,
+   * silently minting a duplicate tag each time. A genuinely empty tags array is still a valid
+   * "not found" signal (`tags.find(...)` naturally returns undefined -> null below); only an
+   * UNPARSEABLE response — a real ambiguity, not an absence — throws.
    */
   private async findExistingTagId(name: string, workspaceId: string): Promise<string | null> {
     const result = await this.mcpCall("list_tags", { workspaceId, limit: 200 });
@@ -322,9 +318,9 @@ export class RealTanaBackend implements TanaBackend {
   }
 
   /**
-   * KTD-9: attributeId required (not a field name). Same verification-fallback rule as localTag
-   * (§16) — field-value rendering in read-back markdown is unverified for every field type
-   * (options/date/plain differ), so this stays at isError-false + re-read-ok. DEFERRED-VERIFY.
+   * attributeId required (not a field name). Same verification approach as localTag — field-value
+   * rendering in read-back markdown hasn't been confirmed against a live Tana instance for every
+   * field type (options/date/plain differ), so this stays at isError-false + re-read-ok.
    */
   private async localField(row: WriteRow): Promise<ApplyResult> {
     const nodeId = requireString(row.payload.nodeId ?? row.targetNodeId, "nodeId");
@@ -341,16 +337,15 @@ export class RealTanaBackend implements TanaBackend {
   }
 
   /**
-   * Shared read-back-and-report tail for ops whose verification stays at the §16 fallback tier
-   * (isError-false + re-read-ok): localTag and localField had this identical block twice
-   * (simplify pass, U-10).
+   * Shared read-back-and-report tail for ops whose verification stays at the isError-false +
+   * re-read-ok tier: localTag and localField had this identical block twice.
    */
   private async readNodeEvidence(nodeId: string, command: string): Promise<ApplyResult> {
     const read = await this.readNode(nodeId, 1);
     return { route: "local", targetNodeId: nodeId, evidence: { command, name: read.name ?? null } };
   }
 
-  /** §16: isError-false is the full bar (= old strength) — checkbox state isn't reliably rendered in read-back markdown. */
+  /** isError-false is the full verification bar here — checkbox state isn't reliably rendered in read-back markdown. */
   private async localDone(row: WriteRow): Promise<ApplyResult> {
     const nodeId = requireString(row.payload.nodeId ?? row.targetNodeId, "nodeId");
     const done = row.payload.done !== false;
@@ -444,8 +439,8 @@ export class RealTanaBackend implements TanaBackend {
   }
 
   /**
-   * R-6: the full /mcp failure contract. Success is judged SOLELY by `result.isError` — never HTTP
-   * status. The Accept header is mandatory (its absence gets `-32000 Not Acceptable`, §4 VERIFIED).
+   * The full /mcp failure contract. Success is judged SOLELY by `result.isError` — never HTTP
+   * status. The Accept header is mandatory (its absence gets a `-32000 Not Acceptable` error).
    * Any of: non-2xx, a JSON-RPC `error` member, a malformed (non-JSON) body, `result.isError`
    * truthy, or a transport error (timeout/refused, which `fetchWithTimeout`'s own throw already
    * surfaces) routes to the caller's existing retry/dead-letter path via a thrown Error.
@@ -487,10 +482,8 @@ export class RealTanaBackend implements TanaBackend {
  * A create's `children` payload entries are either a bare string or `{name: ...}`. Shared by
  * buildTanaPaste (what gets sent) and localCreate's read-back verification (what must land) —
  * keeping both in lockstep matters: if they diverge, verification could pass/fail against
- * different text than what was actually sent (simplify pass, U-10 — was written out twice with
- * slightly different shapes). Returns null (not "") for a genuinely unrecognized child shape, so
- * callers can distinguish "recognized but empty" from "not a child at all" exactly as the two
- * original call sites each already did.
+ * different text than what was actually sent. Returns null (not "") for a genuinely unrecognized
+ * child shape, so callers can distinguish "recognized but empty" from "not a child at all".
  */
 function childDisplayText(child: unknown): string | null {
   if (typeof child === "string") return oneLine(child);
@@ -532,20 +525,19 @@ function buildInputNode(row: WriteRow): Record<string, unknown> {
 export function markerFor(row: WriteRow): string | null {
   if (row.opType !== "create") return null;
   if (row.payload.includeIdempotencyMarker === false) return null;
-  // Raw Tana Paste opts out of the marker under EITHER raw mechanism (isRaw — Forge-audit fix,
-  // U-10; previously only the literal-tanaPaste-string case was checked here, while
-  // rawTanaPaste:true fell through to a marker that got appended into content the producer
-  // explicitly wants Tana-Paste-reinterpreted, an assumption verification can't safely make).
+  // Raw Tana Paste opts out of the marker under EITHER raw mechanism (isRaw checks both a literal
+  // tanaPaste string and rawTanaPaste:true) — a marker appended into content the producer
+  // explicitly wants Tana-Paste-reinterpreted is an assumption verification can't safely make.
   // A literal tanaPaste string bypasses buildTanaPaste's marker-append entirely (early return);
-  // rawTanaPaste:true with structured fields still gets built normally but now correctly gets NO
-  // marker line either. Raw paste is at-least-once by design (R1-adjacent) either way.
+  // rawTanaPaste:true with structured fields still gets built normally but gets NO marker line
+  // either. Raw paste is at-least-once by design either way (a crash mid-apply can duplicate it;
+  // the marker exists specifically to prevent that for the non-raw case).
   if (isRaw(row.payload)) return null;
   return `${IDEMPOTENCY_PREFIX}${row.dedupKey}`;
 }
 
 /** The Local API read-back appends this comment to every rendered line; both markdown-parsing
- * helpers below strip it before matching (shared constant, simplify pass U-10 — was two
- * identical regex literals). */
+ * helpers below strip it before matching. */
 const NODE_ID_COMMENT_RE = /\s*<!--\s*node-id:[^>]*-->\s*$/;
 
 /** Child text lines from a Local-API read-back: strip the node-id comment and leading bullet. */
@@ -582,9 +574,10 @@ function requireString(value: unknown, label: string): string {
 /**
  * Best-effort extraction of structured data from an MCP tool result: prefers `structuredContent`
  * (newer MCP servers), else scans `content[].text` blocks for a JSON-parseable string. Returns null
- * rather than throwing when neither is present/parseable — callers treat null as "not found" and
- * fall back to their own readback loop rather than trusting a guessed shape. Unverified in this
- * session (mcp-tools-list.json captured tool SCHEMAS, not example RESULTS) — DEFERRED-VERIFY.
+ * rather than throwing when neither is present/parseable — callers treat null as "unknown" and
+ * fall back to their own readback loop rather than trusting a guessed shape. This shape has not
+ * been confirmed against a live Tana instance's actual tool-call results — only the tools' input
+ * schemas were available when this was written — hence the defensive, never-guess design.
  */
 function parseMcpJson<T>(result: Record<string, unknown>): T | null {
   if (result.structuredContent !== undefined) return result.structuredContent as T;

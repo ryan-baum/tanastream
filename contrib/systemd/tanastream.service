@@ -8,7 +8,7 @@
 #   systemctl --user enable --now tanastream
 #   journalctl --user -u tanastream -f
 #
-# Requires bun on PATH for the user the unit runs as. Config resolution is unchanged (KTD-2):
+# Requires bun on PATH for the user the unit runs as. Config resolution is unchanged here:
 # TANASTREAM_ENDPOINT/TANASTREAM_TOKEN env vars, or ~/.config/tanastream/config.json.
 
 [Unit]

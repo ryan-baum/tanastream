@@ -54,9 +54,9 @@ retrying forever, so one poison write never blocks the rest of the queue.
    resolved: `tanastream dead-letter retry <id>` — resets attempts to 0 and returns it to pending.
 3. If the payload itself was wrong (bad node ID, missing required field): enqueue a corrected
    write with a **new** idempotency key. Leave the bad row dead — it's your audit trail.
-4. If it's a KTD-9 rejection (`TANA_ID_REQUIRED` — a `tag`/`field` op was enqueued with a name
-   instead of an ID) it never made it INTO the queue at all; there's nothing to retry. Fix the
-   producer and re-enqueue with the correct ID.
+4. If it's an ID-required rejection (`TANA_ID_REQUIRED` — a `tag`/`field` op was enqueued with a
+   name instead of an ID) it never made it INTO the queue at all; there's nothing to retry. Fix
+   the producer and re-enqueue with the correct ID.
 
 ## Logs and state
 

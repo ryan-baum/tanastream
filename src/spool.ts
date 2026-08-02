@@ -57,7 +57,7 @@ export class TanaSpool {
 
   enqueue(input: EnqueueInput, nowMs = Date.now()): EnqueueResult {
     validateInput(input);
-    // F1: reject Tana-Paste-unsafe create content loudly at the queue boundary (fail-closed),
+    // Reject Tana-Paste-unsafe create content loudly at the queue boundary (fail-closed),
     // before it can be silently misparsed on the Local API. Opt-in raw via rawTanaPaste/tanaPaste.
     if (input.opType === "create") {
       assertCreateSafe(input.payload);
@@ -65,7 +65,7 @@ export class TanaSpool {
       // orphan-duplicate the create via a read-back whitespace mismatch. Auto-hash keys are hex-safe.
       if (input.idempotencyKey) assertKeySafe(input.idempotencyKey);
     }
-    // KTD-9: tag/field ops require an ID, never a name — reject loudly at enqueue (see validate.ts).
+    // tag/field ops require an ID, never a name — reject loudly at enqueue (see validate.ts).
     if (input.opType === "tag") assertTagIdPresent(input.payload);
     if (input.opType === "field") assertFieldAttributeIdPresent(input.payload);
     const targetNodeId = input.targetNodeId || payloadTarget(input.payload);
@@ -196,10 +196,8 @@ export class TanaSpool {
   }
 
   /**
-   * KTD-4/R-7: last-attempt tracking for the drain loop's per-route pacing gates. Route-keyed
-   * (Local and Input each get their own meta key, so the two gates stay independent) — replaces
-   * a pair of near-identical noteInputAttempt/lastInputAttemptAt + noteLocalAttempt/
-   * lastLocalAttemptAt method pairs with one parameterized pair (simplify pass, U-10).
+   * Last-attempt tracking for the drain loop's per-route pacing gates. Route-keyed (Local and
+   * Input each get their own meta key, so the two gates stay independent).
    */
   noteAttempt(route: ApplyRoute, nowMs: number): void {
     this.setMeta(`last_${route}_attempt_at`, String(nowMs));
@@ -209,7 +207,7 @@ export class TanaSpool {
     return numberMeta(this.getMeta(`last_${route}_attempt_at`));
   }
 
-  /** Avoids computing the full status() aggregate (GROUP BY + counts + two more meta reads) just to read one meta field (simplify pass, U-10). */
+  /** Avoids computing the full status() aggregate (GROUP BY + counts + two more meta reads) just to read one meta field. */
   lastInputAppliedAt(): number | null {
     return numberMeta(this.getMeta("last_input_at"));
   }
@@ -323,10 +321,10 @@ export function openSpool(options: OpenSpoolOptions = {}): TanaSpool {
     }
     // Fail closed: only move the live spool aside on a GENUINE corruption signature.
     // A transient SQLITE_BUSY / IOERR (e.g. two processes opening a fresh spool at once)
-    // must NEVER destroy producer-acked writes — surface it and halt instead. AND (Forge-audit
-    // fix, U-10, Finding 4): recovery itself is destructive enough (renames the live spool aside)
-    // that it must never fire just because SOME caller happened to pass recoverCorrupt:true by
-    // default — see cli.ts's --recover-corrupt gate, which is the only place true now originates.
+    // must NEVER destroy producer-acked writes — surface it and halt instead. Recovery itself is
+    // destructive enough (renames the live spool aside) that it must never fire just because SOME
+    // caller happened to pass recoverCorrupt:true by default — see cli.ts's --recover-corrupt
+    // flag, which is the only place `true` originates from in this codebase.
     if (!options.recoverCorrupt || !isCorruptionError(error)) throw error;
     const backupBase = moveCorruptFiles(dbPath);
     recoveredCorruption = true;
@@ -446,7 +444,7 @@ function validateInput(input: EnqueueInput): void {
   if (input.maxAttempts !== undefined && input.maxAttempts < 1) throw new Error("maxAttempts must be >= 1");
 }
 
-/** Also used by cli.ts (as the CLI's own --target fallback) — exported to avoid a byte-identical duplicate (simplify pass, U-10). */
+/** Also used by cli.ts (as the CLI's own --target fallback) — exported to avoid a byte-identical duplicate. */
 export function payloadTarget(payload: Record<string, unknown>): string | undefined {
   if (typeof payload.targetNodeId === "string") return payload.targetNodeId;
   if (typeof payload.nodeId === "string") return payload.nodeId;
@@ -493,19 +491,17 @@ function numberMeta(value: string | null): number | null {
 }
 
 /**
- * Forge-audit fix (U-10, Finding 4): the old version renamed the main db to a FIXED `.corrupt`
- * name but DELETED `-wal`/`-shm` outright — in WAL mode, the `-wal` file can hold recently
- * COMMITTED transactions not yet checkpointed into the main file, so a corrupt main-file header
- * doesn't mean the WAL's contents are also bad; deleting it silently drops producer-acked writes
- * that might otherwise be forensically recoverable. It also reused that same fixed name every
- * time, so a SECOND corruption event on a fresh spool `rmSync`'d the FIRST backup before it could
- * ever be inspected. Both fixed here: all three files are renamed (never deleted) to a
- * timestamped backup base, so every corruption event keeps its own evidence.
+ * Renames the main db AND its `-wal`/`-shm` files — never deletes them. In WAL mode, the `-wal`
+ * file can hold recently COMMITTED transactions not yet checkpointed into the main file, so a
+ * corrupt main-file header doesn't mean the WAL's contents are also bad; deleting it would
+ * silently drop producer-acked writes that might otherwise be forensically recoverable. Each
+ * call uses a fresh timestamped backup base, so repeated corruption events each keep their own
+ * independent evidence rather than overwriting one another.
  */
 function moveCorruptFiles(dbPath: string): string {
   // A random suffix (not just the millisecond timestamp) guards against two corruption events
-  // landing in the same millisecond — a real possibility, and the exact class of collision that
-  // made the old fixed-name scheme destroy its own prior backup.
+  // landing in the same millisecond — a real possibility, and exactly the class of collision a
+  // fixed or coarse-grained name would be vulnerable to.
   const unique = `${new Date().toISOString().replace(/[:.]/g, "-")}-${Math.random().toString(36).slice(2, 8)}`;
   const backupBase = `${dbPath}.corrupt-${unique}`;
   if (existsSync(dbPath)) renameSync(dbPath, backupBase);
