@@ -1,6 +1,6 @@
 # tanastream
 
-A durable write queue for [Tana](https://tana.inc)'s Local API. You hand it a write; it survives a crash, a closed Tana window, or a network blip — then applies exactly once, and proves it by reading back what it wrote.
+A durable write queue for [Tana](https://tana.inc)'s Local API. You hand it a write; it survives a crash, a closed Tana window, or a network blip — then applies it effectively once for marker-covered creates (at-least-once otherwise), and proves it by reading back what it wrote.
 
 **Use it if any of these describe you:**
 
@@ -17,7 +17,7 @@ Standalone: Bun + Tana's Local API (`:8262`) is the whole stack. No dependency o
 
 Because the measurement that proved the API safe is the same one that showed what still breaks.
 
-A direct stress test (2026-08-01, Tana Outliner 1.523.0 / Local API 1.0.0) ran 300+ concurrent writes across REST, `/mcp`, and three separate OS processes: zero drops, zero duplicates, zero corruption — for the operations tested (create/import, name/description update, done, read). Tana serializes writes server-side at ~12/sec regardless of client count. A second concurrent writer will not corrupt your graph on its own. Corruption-avoidance was this tool's original justification, and that premise is dead; you'll find no such claim here.
+A direct stress test (2026-08-01, Tana Outliner 1.523.0 / Local API 1.0.0) ran 300+ concurrent writes across REST, `/mcp`, and three separate OS processes: zero drops, zero duplicates, zero corruption — for the operations tested (create/import, name/description update, done, read). Write throughput pinned at ~12/sec regardless of client count; server-side serialization is the best-supported explanation for that ceiling — a hypothesis, not a proven invariant, since a single event loop, a coarse lock, or a rate limiter would produce the same picture. A second concurrent writer will not corrupt your graph on its own. Corruption-avoidance was this tool's original justification, and that premise is dead; you'll find no such claim here.
 
 What the measurement didn't touch is everything *around* the write, and that's where the queue earns its keep:
 
@@ -94,7 +94,7 @@ The Local-route drain loop enforces a minimum interval between writes — 100ms 
 
 ## What's proven against a real Tana, and what isn't (yet)
 
-Honest status: `create`, `move`, `trash`, and node read-back are proven against a real Tana Local API — they're what the concurrency measurement exercised live. The other four op types (`tag`, `tag-create`, `field`, `done`) go over Tana's `/mcp` JSON-RPC endpoint and have not yet been exercised against a live Tana instance by this codebase. Their implementation follows Tana's published tool schemas and the documented `/mcp` failure contract (`isError` decides success, never HTTP status), but the wire behavior for those four is unconfirmed. The hermetic suite (`bun test`) covers all eight against a mock server; the one live test (`tests/live-smoke.test.ts`) currently exercises `create` only. If something looks wrong specifically on those four ops, that's the first place to suspect — file an issue with the exact error.
+Honest status: `create` and node read-back are proven against a real Tana Local API — the concurrency measurement exercised both live, and the opt-in smoke test covers them. `trash` has touched a real Tana only as that smoke test's cleanup step, and `move` has never been exercised live at all. The other four op types (`tag`, `tag-create`, `field`, `done`) go over Tana's `/mcp` JSON-RPC endpoint and have not yet been exercised against a live Tana instance by this codebase. Their implementation follows Tana's published tool schemas and the documented `/mcp` failure contract (`isError` decides success, never HTTP status), but the wire behavior for those four is unconfirmed. The hermetic suite (`bun test`) covers all eight against a mock server; the one live test (`tests/live-smoke.test.ts`) currently exercises `create` only. If something looks wrong specifically on those four ops, that's the first place to suspect — file an issue with the exact error.
 
 ## Development
 
