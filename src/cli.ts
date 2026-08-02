@@ -2,10 +2,11 @@ import { drainOnce, enqueueWrite, reconcileAppliedInput, recoverInflight } from 
 import { RealTanaBackend } from "./realBackend";
 import { openSpool } from "./spool";
 import { acquireDrainLock } from "./lock";
-import { defaultDbPath, resolveLocalMinIntervalMs } from "./config";
+import { defaultDbPath, ownConfigPath, resolveLocalMinIntervalMs } from "./config";
 import type { EnqueueInput, OpType } from "./types";
 import { OP_TYPES } from "./types";
 import { readFileSync } from "fs";
+import { join } from "path";
 
 interface ParsedArgs {
   command: string | null;
@@ -16,6 +17,10 @@ interface ParsedArgs {
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const parsed = parseArgs(argv);
   const command = parsed.command;
+  if (parsed.flags.has("version")) {
+    console.log(packageVersion());
+    return;
+  }
   if (!command || command === "help" || parsed.flags.has("help") || parsed.flags.has("h")) {
     printHelp();
     return;
@@ -303,7 +308,17 @@ function addFlag(flags: ParsedArgs["flags"], key: string, value: string | boolea
 }
 
 function printHelp(): void {
-  console.log(`TanaStream - durable serialized Tana write queue
+  console.log(`tanastream v${packageVersion()} - a durable, single-writer Tana write queue
+
+Writes only. It never reads, searches, or queries your Tana graph for you — it enqueues
+write intents, applies them via Tana's Local API, and verifies by reading back what it
+itself just wrote.
+
+Configuration (checked in order — see config.example.json):
+  1. TANASTREAM_ENDPOINT / TANASTREAM_TOKEN environment variables
+  2. ${ownConfigPath()}
+  3. ~/.config/supertag/config.json (an explicit, logged fallback for supertag-cli users)
+  Run any command with no config found and you'll get the exact file path + example to create.
 
 Usage:
   tanastream enqueue <op> [options]
@@ -313,6 +328,8 @@ Usage:
   tanastream daemon [--verbose]
   tanastream dead-letter list [--limit N]
   tanastream dead-letter retry <id>
+  tanastream --version
+  tanastream help
 
 Ops:
   create | edit | tag | tag-create | field | trash | done | move
@@ -338,7 +355,19 @@ Create flags:
   --description TEXT       Optional description child.
   --child TEXT             Repeatable child text.
   --no-marker              Disable visible TanaStreamIdempotency child.
+
+tag/field flags (SPEC KTD-9): --tag and --attribute-id take Tana node/attribute IDs, never
+names — find them via Tana's node context menu ("Copy ID") or supertag-cli's schema tools.
 `);
+}
+
+function packageVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf-8")) as { version?: string };
+    return pkg.version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
 }
 
 function isOpType(value: unknown): value is OpType {
