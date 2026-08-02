@@ -1,0 +1,17 @@
+# Spool / state (per-install, never shipped)
+*.db
+*.db-wal
+*.db-shm
+state/
+.local/state/
+
+# Local config with secrets
+config.json
+.env
+
+# Node/Bun
+node_modules/
+bun.lockb
+
+# OS
+.DS_Store

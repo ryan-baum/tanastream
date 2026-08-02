@@ -1,0 +1,13 @@
+{
+  "name": "tanastream",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "tanastream": "./tanastream"
+  },
+  "scripts": {
+    "test": "bun test",
+    "check": "bun test"
+  }
+}

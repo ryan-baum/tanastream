@@ -1,0 +1,6 @@
+{
+  "_comment": "Copy to ~/.config/tanastream/config.json and fill in your own values. Never commit the real file — .gitignore already excludes config.json.",
+  "apiEndpoint": "http://127.0.0.1:8262",
+  "apiToken": "REPLACE_WITH_YOUR_LOCAL_API_BEARER_TOKEN",
+  "defaultTargetNode": "REPLACE_WITH_YOUR_INBOX_OR_TARGET_NODE_ID"
+}
