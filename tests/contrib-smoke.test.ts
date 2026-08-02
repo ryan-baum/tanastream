@@ -66,3 +66,16 @@ describe("R-14: portability contrib", () => {
     }
   });
 });
+
+// Forge-audit fix (U-10, Finding 13): package.json wasn't publish-ready (private:true, no
+// license/description/author/engines). Regression-guards those fields going forward.
+describe("Finding 13: package.json is publish-ready", () => {
+  test("no private:true, and license/description/author/engines are present", () => {
+    const pkg = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf-8")) as Record<string, unknown>;
+    expect(pkg.private).not.toBe(true);
+    expect(typeof pkg.license).toBe("string");
+    expect(typeof pkg.description).toBe("string");
+    expect(typeof pkg.author).toBe("string");
+    expect(pkg.engines).toBeTruthy();
+  });
+});

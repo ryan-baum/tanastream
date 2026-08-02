@@ -1,10 +1,20 @@
 {
   "name": "tanastream",
   "version": "0.1.0",
-  "private": true,
+  "description": "A durable, single-writer write queue for Tana's Local API",
+  "license": "MIT",
+  "author": "Ryan Baum",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YOUR_USERNAME/tanastream.git"
+  },
+  "homepage": "https://github.com/YOUR_USERNAME/tanastream#readme",
   "bin": {
     "tanastream": "./tanastream"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
   },
   "scripts": {
     "test": "bun test",

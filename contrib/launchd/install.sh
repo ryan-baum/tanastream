@@ -30,7 +30,16 @@ sed \
   -e "s|__LOG_DIR__|$LOG_DIR|g" \
   "$SCRIPT_DIR/com.tanastream.plist.template" > "$LAUNCH_DIR/com.tanastream.plist"
 
+# launchctl bootout is ASYNCHRONOUS — it returns before the job is actually unregistered. An
+# immediate bootstrap right after can race it and fail with "Bootstrap failed: 5: Input/output
+# error", leaving the daemon NOT running. Poll until the label is actually gone (bounded, so a
+# genuinely stuck job doesn't hang this script forever).
 launchctl bootout "gui/$UID_VALUE/com.tanastream" >/dev/null 2>&1 || true
+for _ in $(seq 1 50); do
+  launchctl print "gui/$UID_VALUE/com.tanastream" >/dev/null 2>&1 || break
+  sleep 0.1
+done
+
 launchctl bootstrap "gui/$UID_VALUE" "$LAUNCH_DIR/com.tanastream.plist"
 launchctl kickstart -k "gui/$UID_VALUE/com.tanastream"
 
