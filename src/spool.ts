@@ -3,7 +3,7 @@ import { existsSync, renameSync, rmSync } from "fs";
 import { createHash } from "crypto";
 import { ensureParent, defaultDbPath } from "./config";
 import { assertCreateSafe, assertFieldAttributeIdPresent, assertKeySafe, assertTagIdPresent } from "./validate";
-import type { ApplyResult, EnqueueInput, EnqueueResult, OpType, QueueStatus, WriteRow, WriteState } from "./types";
+import type { ApplyResult, ApplyRoute, EnqueueInput, EnqueueResult, OpType, QueueStatus, WriteRow, WriteState } from "./types";
 import { OP_TYPES } from "./types";
 
 interface StoredWriteRow {
@@ -195,21 +195,23 @@ export class TanaSpool {
     this.event(id, "held", reason, {}, nowMs);
   }
 
-  noteInputAttempt(nowMs: number): void {
-    this.setMeta("last_input_attempt_at", String(nowMs));
+  /**
+   * KTD-4/R-7: last-attempt tracking for the drain loop's per-route pacing gates. Route-keyed
+   * (Local and Input each get their own meta key, so the two gates stay independent) — replaces
+   * a pair of near-identical noteInputAttempt/lastInputAttemptAt + noteLocalAttempt/
+   * lastLocalAttemptAt method pairs with one parameterized pair (simplify pass, U-10).
+   */
+  noteAttempt(route: ApplyRoute, nowMs: number): void {
+    this.setMeta(`last_${route}_attempt_at`, String(nowMs));
   }
 
-  lastInputAttemptAt(): number | null {
-    return numberMeta(this.getMeta("last_input_attempt_at"));
+  lastAttemptAt(route: ApplyRoute): number | null {
+    return numberMeta(this.getMeta(`last_${route}_attempt_at`));
   }
 
-  /** KTD-4: mirrors noteInputAttempt/lastInputAttemptAt for the Local route's pacing gate (R-7). */
-  noteLocalAttempt(nowMs: number): void {
-    this.setMeta("last_local_attempt_at", String(nowMs));
-  }
-
-  lastLocalAttemptAt(): number | null {
-    return numberMeta(this.getMeta("last_local_attempt_at"));
+  /** Avoids computing the full status() aggregate (GROUP BY + counts + two more meta reads) just to read one meta field (simplify pass, U-10). */
+  lastInputAppliedAt(): number | null {
+    return numberMeta(this.getMeta("last_input_at"));
   }
 
   markReconciled(id: number, result: ApplyResult, nowMs: number): void {
@@ -440,7 +442,8 @@ function validateInput(input: EnqueueInput): void {
   if (input.maxAttempts !== undefined && input.maxAttempts < 1) throw new Error("maxAttempts must be >= 1");
 }
 
-function payloadTarget(payload: Record<string, unknown>): string | undefined {
+/** Also used by cli.ts (as the CLI's own --target fallback) — exported to avoid a byte-identical duplicate (simplify pass, U-10). */
+export function payloadTarget(payload: Record<string, unknown>): string | undefined {
   if (typeof payload.targetNodeId === "string") return payload.targetNodeId;
   if (typeof payload.nodeId === "string") return payload.nodeId;
   return undefined;

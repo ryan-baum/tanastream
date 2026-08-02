@@ -22,7 +22,7 @@ let server: ReturnType<typeof Bun.serve> | null = null;
 let PORT = 0;
 let nodesById: Record<string, MockNode> = {};
 let tags: Array<{ id: string; name: string }> = [];
-let mcpMode: "ok" | "isError" | "http500" | "rpcError" | "malformed" = "ok";
+let mcpMode: "ok" | "isError" | "http500" | "rpcError" | "malformed" | "unparseableListTags" = "ok";
 let lastMcpAccept: string | null = null;
 let lastMcpCall: { name: string; arguments: Record<string, unknown> } | null = null;
 let createTagCallCount = 0;
@@ -57,9 +57,19 @@ beforeAll(() => {
           return Response.json({ jsonrpc: "2.0", id: body.id, result: { isError: true, content: [{ type: "text", text: "simulated tool failure" }] } });
         }
 
+        if (toolName === "list_tags" && mcpMode === "unparseableListTags") {
+          // isError:false (a real success per the JSON-RPC contract) but content[].text is
+          // human-readable prose, not JSON — parseMcpJson must return null for this, and
+          // findExistingTagId must treat that as "unknown," never as "not found."
+          return Response.json({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: { isError: false, content: [{ type: "text", text: "Tags in this workspace: none configured yet." }] },
+          });
+        }
+
         // mcpMode === "ok" — dispatch a plausible per-tool success shape
         if (toolName === "list_tags") {
-          createTagCallCount += mcpMode === "ok" && toolName === "list_tags" ? 0 : 0; // no-op, kept for clarity
           const visible = createTagCallCount >= tagAppearsAfterNCreateCalls ? tags : [];
           return Response.json({
             jsonrpc: "2.0",
@@ -341,6 +351,23 @@ describe("R-5: tag-create via create_tag + list_tags readback", () => {
       cleanup();
     }
   }, 5000);
+
+  // U-10 simplify-pass hardening (ALTITUDE finding, HIGH — coordinator-flagged): an unparseable
+  // list_tags response must NEVER be silently treated as "tag not found." Before this fix,
+  // parseMcpJson's null was coerced to `[]`, so a persistent parse mismatch would make the
+  // pre-existence check always report "not found" and mint a duplicate tag on every apply.
+  // Both directions: the ambiguous-response case fails LOUD (this test), and a genuinely empty
+  // tags array still correctly proceeds to create (covered by the "does not exist" test above).
+  test("must-reject: an unparseable list_tags response throws — never silently treated as not-found", async () => {
+    const { backend, cleanup } = makeBackend();
+    try {
+      mcpMode = "unparseableListTags";
+      const row = rowFor("tag-create", "tc4", { name: "AmbiguousTag" });
+      await expect(backend.apply(row, "local", { nowMs: Date.now() })).rejects.toThrow(/could not parse/);
+    } finally {
+      cleanup();
+    }
+  });
 });
 
 describe("R-6: the full /mcp failure contract (verifier, both directions)", () => {

@@ -161,7 +161,7 @@ export class RealTanaBackend implements TanaBackend {
       }
       const expectedChildren = Array.isArray(row.payload.children) ? row.payload.children : [];
       for (const child of expectedChildren) {
-        const text = typeof child === "string" ? oneLine(child) : child && typeof child === "object" && "name" in child ? oneLine(String((child as { name: unknown }).name)) : "";
+        const text = childDisplayText(child) ?? "";
         if (text && !childLines.includes(text)) {
           throw new Error(`Local create verification failed: child ${JSON.stringify(text)} did not land as a child node — possible Tana Paste misparse`);
         }
@@ -231,8 +231,7 @@ export class RealTanaBackend implements TanaBackend {
     const action = (row.payload.action === "remove" ? "remove" : "add") as "add" | "remove";
     const tagId = requireString(row.payload.tagId, "tagId");
     await this.mcpCall("tag", { nodeId, action, tagIds: [tagId] });
-    const read = await this.readNode(nodeId, 1);
-    return { route: "local", targetNodeId: nodeId, evidence: { command: `tag ${action}`, name: read.name ?? null } };
+    return this.readNodeEvidence(nodeId, `tag ${action}`);
   }
 
   /**
@@ -267,9 +266,26 @@ export class RealTanaBackend implements TanaBackend {
     throw new Error(`created tag ${name} was absent from list_tags readback`);
   }
 
+  /**
+   * U-10 simplify-pass hardening (ALTITUDE finding, HIGH): parseMcpJson's `null` means "this
+   * session doesn't know how to parse the response," NOT "no tags exist." The original code
+   * collapsed both into an empty array (`?? []`), which — on a persistent parse mismatch — would
+   * make `localTagCreate`'s pre-existence check always report "not found" and call `create_tag`
+   * again on every run, silently minting a duplicate tag each time (the exact failure class R-6's
+   * isError-not-status posture exists to prevent, one level up). A genuinely empty tags array is
+   * still a valid "not found" signal (`tags.find(...)` naturally returns undefined -> null below);
+   * only an UNPARSEABLE response — a real ambiguity, not an absence — throws.
+   */
   private async findExistingTagId(name: string, workspaceId: string): Promise<string | null> {
     const result = await this.mcpCall("list_tags", { workspaceId, limit: 200 });
-    const tags = parseMcpJson<Array<{ id?: unknown; name?: unknown }>>(result) ?? [];
+    const tags = parseMcpJson<Array<{ id?: unknown; name?: unknown }>>(result);
+    if (tags === null) {
+      throw new Error(
+        `list_tags returned a response shape this build could not parse (neither structuredContent ` +
+          `nor a JSON-parseable content[].text block) — refusing to treat that as "tag not found," ` +
+          `which would risk creating a duplicate tag. Raw result: ${JSON.stringify(result).slice(0, 500)}`,
+      );
+    }
     const match = tags.find((t) => t && typeof t === "object" && t.name === name && typeof t.id === "string");
     return typeof match?.id === "string" ? match.id : null;
   }
@@ -290,12 +306,17 @@ export class RealTanaBackend implements TanaBackend {
       const content = requireString(row.payload.value ?? row.payload.content, "value");
       await this.mcpCall("set_field_content", { nodeId, attributeId, content, mode });
     }
+    return this.readNodeEvidence(nodeId, isOption ? "set_field_option" : "set_field_content");
+  }
+
+  /**
+   * Shared read-back-and-report tail for ops whose verification stays at the §16 fallback tier
+   * (isError-false + re-read-ok): localTag and localField had this identical block twice
+   * (simplify pass, U-10).
+   */
+  private async readNodeEvidence(nodeId: string, command: string): Promise<ApplyResult> {
     const read = await this.readNode(nodeId, 1);
-    return {
-      route: "local",
-      targetNodeId: nodeId,
-      evidence: { command: isOption ? "set_field_option" : "set_field_content", name: read.name ?? null },
-    };
+    return { route: "local", targetNodeId: nodeId, evidence: { command, name: read.name ?? null } };
   }
 
   /** §16: isError-false is the full bar (= old strength) — checkbox state isn't reliably rendered in read-back markdown. */
@@ -431,6 +452,23 @@ export class RealTanaBackend implements TanaBackend {
   }
 }
 
+/**
+ * A create's `children` payload entries are either a bare string or `{name: ...}`. Shared by
+ * buildTanaPaste (what gets sent) and localCreate's read-back verification (what must land) —
+ * keeping both in lockstep matters: if they diverge, verification could pass/fail against
+ * different text than what was actually sent (simplify pass, U-10 — was written out twice with
+ * slightly different shapes). Returns null (not "") for a genuinely unrecognized child shape, so
+ * callers can distinguish "recognized but empty" from "not a child at all" exactly as the two
+ * original call sites each already did.
+ */
+function childDisplayText(child: unknown): string | null {
+  if (typeof child === "string") return oneLine(child);
+  if (child && typeof child === "object" && "name" in child) {
+    return oneLine(String((child as { name: unknown }).name));
+  }
+  return null;
+}
+
 export function buildTanaPaste(row: WriteRow): string {
   if (typeof row.payload.tanaPaste === "string") return row.payload.tanaPaste;
   const name = requireString(row.payload.name, "name");
@@ -440,10 +478,8 @@ export function buildTanaPaste(row: WriteRow): string {
   }
   const children = Array.isArray(row.payload.children) ? row.payload.children : [];
   for (const child of children) {
-    if (typeof child === "string") lines.push(`  - ${oneLine(child)}`);
-    else if (child && typeof child === "object" && "name" in child) {
-      lines.push(`  - ${oneLine(String((child as { name: unknown }).name))}`);
-    }
+    const text = childDisplayText(child);
+    if (text !== null) lines.push(`  - ${text}`);
   }
   const marker = markerFor(row);
   if (marker) lines.push(`  - ${marker}`);
@@ -472,20 +508,24 @@ export function markerFor(row: WriteRow): string | null {
   return `${IDEMPOTENCY_PREFIX}${row.dedupKey}`;
 }
 
+/** The Local API read-back appends this comment to every rendered line; both markdown-parsing
+ * helpers below strip it before matching (shared constant, simplify pass U-10 — was two
+ * identical regex literals). */
+const NODE_ID_COMMENT_RE = /\s*<!--\s*node-id:[^>]*-->\s*$/;
+
 /** Child text lines from a Local-API read-back: strip the node-id comment and leading bullet. */
 function readbackChildLines(markdown: string): string[] {
   return markdown
     .split(/\r?\n/)
-    .map((line) => line.replace(/\s*<!--\s*node-id:[^>]*-->\s*$/, "").replace(/^\s*-\s+/, "").trim())
+    .map((line) => line.replace(NODE_ID_COMMENT_RE, "").replace(/^\s*-\s+/, "").trim())
     .filter((line) => line.length > 0);
 }
 
 function markdownHasMarkerLine(markdown: string, marker: string): boolean {
   return markdown.split(/\r?\n/).some((rawLine) => {
-    // The Local API read-back appends a " <!-- node-id: ... -->" comment to each
-    // rendered line; strip it (and any leading bullet/indent) before matching so the
+    // Strip the node-id comment (and any leading bullet/indent) before matching so the
     // dedupKey is compared at its true boundary — never as a prefix of a longer key.
-    const line = rawLine.replace(/\s*<!--\s*node-id:[^>]*-->\s*$/, "").trim();
+    const line = rawLine.replace(NODE_ID_COMMENT_RE, "").trim();
     if (line === marker) return true;
     const markerOffset = line.indexOf(IDEMPOTENCY_PREFIX);
     if (markerOffset === -1) return false;

@@ -1,6 +1,6 @@
 import { drainOnce, enqueueWrite, reconcileAppliedInput, recoverInflight } from "./queue";
 import { RealTanaBackend } from "./realBackend";
-import { openSpool } from "./spool";
+import { openSpool, payloadTarget } from "./spool";
 import { acquireDrainLock } from "./lock";
 import { defaultDbPath, ownConfigPath, resolveLocalMinIntervalMs } from "./config";
 import type { EnqueueInput, OpType } from "./types";
@@ -63,12 +63,12 @@ async function commandEnqueue(parsed: ParsedArgs): Promise<void> {
     opType: op,
     idempotencyKey: stringFlag(parsed, "key") || stringFlag(parsed, "idempotency-key"),
     payload,
-    targetNodeId: stringFlag(parsed, "target") || stringFlag(parsed, "target-node-id") || targetFromPayload(payload),
+    targetNodeId: stringFlag(parsed, "target") || stringFlag(parsed, "target-node-id") || payloadTarget(payload),
     priority: numberFlag(parsed, "priority") ?? 0,
     source: stringFlag(parsed, "source") || "tanastream-cli",
     maxAttempts: numberFlag(parsed, "max-attempts"),
   };
-  const spool = openSpool({ dbPath: stringFlag(parsed, "db") || defaultDbPath(), recoverCorrupt: true });
+  const spool = openSpool({ dbPath: resolveDbPath(parsed), recoverCorrupt: true });
   try {
     const result = await enqueueWrite(spool, input);
     printJson(result);
@@ -78,7 +78,7 @@ async function commandEnqueue(parsed: ParsedArgs): Promise<void> {
 }
 
 async function commandStatus(parsed: ParsedArgs): Promise<void> {
-  const spool = openSpool({ dbPath: stringFlag(parsed, "db") || defaultDbPath(), recoverCorrupt: true });
+  const spool = openSpool({ dbPath: resolveDbPath(parsed), recoverCorrupt: true });
   try {
     const status = spool.status();
     if (parsed.flags.has("no-health")) {
@@ -94,7 +94,7 @@ async function commandStatus(parsed: ParsedArgs): Promise<void> {
 }
 
 async function commandDrain(parsed: ParsedArgs): Promise<void> {
-  const dbPath = stringFlag(parsed, "db") || defaultDbPath();
+  const dbPath = resolveDbPath(parsed);
   const spool = openSpool({ dbPath, recoverCorrupt: true });
   const lock = acquireDrainLock(dbPath);
   if (!lock) {
@@ -121,7 +121,7 @@ async function commandDrain(parsed: ParsedArgs): Promise<void> {
 }
 
 async function commandDaemon(parsed: ParsedArgs): Promise<void> {
-  const dbPath = stringFlag(parsed, "db") || defaultDbPath();
+  const dbPath = resolveDbPath(parsed);
   const spool = openSpool({ dbPath, recoverCorrupt: true });
   const lock = acquireDrainLock(dbPath);
   if (!lock) {
@@ -166,7 +166,7 @@ async function commandDaemon(parsed: ParsedArgs): Promise<void> {
 }
 
 async function commandReconcile(parsed: ParsedArgs): Promise<void> {
-  const spool = openSpool({ dbPath: stringFlag(parsed, "db") || defaultDbPath(), recoverCorrupt: true });
+  const spool = openSpool({ dbPath: resolveDbPath(parsed), recoverCorrupt: true });
   try {
     const backend = new RealTanaBackend();
     const reconciled = await reconcileAppliedInput(spool, backend, { batchLimit: numberFlag(parsed, "max") ?? 100 });
@@ -178,7 +178,7 @@ async function commandReconcile(parsed: ParsedArgs): Promise<void> {
 
 async function commandDeadLetter(parsed: ParsedArgs): Promise<void> {
   const subcommand = parsed.positionals[0] || "list";
-  const spool = openSpool({ dbPath: stringFlag(parsed, "db") || defaultDbPath(), recoverCorrupt: true });
+  const spool = openSpool({ dbPath: resolveDbPath(parsed), recoverCorrupt: true });
   try {
     if (subcommand === "list") {
       printJson({ dead: spool.deadRows(numberFlag(parsed, "limit") ?? 100) });
@@ -374,13 +374,18 @@ function isOpType(value: unknown): value is OpType {
   return typeof value === "string" && OP_TYPES.includes(value as OpType);
 }
 
-function stringFlag(parsed: ParsedArgs, key: string): string | undefined {
-  const value = parsed.flags.get(key);
-  // Fail closed: a value-expecting flag parsed as a bare boolean means its value was dropped
-  // (e.g. `--name -5` where `-5` was not consumed). Never silently default — error clearly.
+/** Fail closed: a value-expecting flag parsed as a bare boolean means its value was dropped
+ * (e.g. `--name -5` where `-5` was not consumed). Never silently default — error clearly. Shared
+ * by stringFlag and listFlag (simplify pass, U-10; both threw the identical message). */
+function assertValueFlag(value: string | boolean | (string | boolean)[] | undefined, key: string): void {
   if (value === true) {
     throw new Error(`--${key} expects a value; for a value starting with '-', use --${key}=value`);
   }
+}
+
+function stringFlag(parsed: ParsedArgs, key: string): string | undefined {
+  const value = parsed.flags.get(key);
+  assertValueFlag(value, key);
   // Fail closed: a single-value flag given more than once arrives as an array. Silently taking a
   // default (a content-hash --key, an INBOX --target) would destroy producer-controlled idempotency
   // or routing with a zero exit code. Reject loudly.
@@ -400,10 +405,7 @@ function numberFlag(parsed: ParsedArgs, key: string): number | undefined {
 
 function listFlag(parsed: ParsedArgs, key: string): string[] {
   const value = parsed.flags.get(key);
-  // Fail closed: same as stringFlag — a dropped value (`--child -mid`) must error, not vanish.
-  if (value === true) {
-    throw new Error(`--${key} expects a value; for a value starting with '-', use --${key}=value`);
-  }
+  assertValueFlag(value, key);
   if (!value) return [];
   if (typeof value === "string") return [value];
   if (Array.isArray(value)) {
@@ -422,10 +424,9 @@ function requiredFlag(parsed: ParsedArgs, key: string, message: string): string 
   return value;
 }
 
-function targetFromPayload(payload: Record<string, unknown>): string | undefined {
-  if (typeof payload.targetNodeId === "string") return payload.targetNodeId;
-  if (typeof payload.nodeId === "string") return payload.nodeId;
-  return undefined;
+/** Every command resolves --db the same way; extracted to avoid six repeats (simplify pass, U-10). */
+function resolveDbPath(parsed: ParsedArgs): string {
+  return stringFlag(parsed, "db") || defaultDbPath();
 }
 
 function printJson(value: unknown): void {
