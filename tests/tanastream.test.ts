@@ -397,7 +397,11 @@ describe("TanaStream adversarial matrix", () => {
 
     expect(high.id).toBeGreaterThan(low.id);
     expect(await drainOnce(spool, backend, { nowMs: 999_999_999 })).toMatchObject({ kind: "applied", writeId: high.id });
-    expect(await drainOnce(spool, backend, { nowMs: 1 })).toMatchObject({ kind: "applied", writeId: low.id });
+    // U-4/R-7: the Local-route pacing gate (KTD-4) is orthogonal to this test's actual subject
+    // (ordering by priority/id, not wall-clock) — the deliberate backwards clock jump to nowMs=1
+    // would otherwise collide with the new default-on pacing gate (elapsed clamps to 0 < 100ms).
+    // localMinIntervalMs: 0 neutralizes that unrelated feature without touching what's asserted.
+    expect(await drainOnce(spool, backend, { nowMs: 1, localMinIntervalMs: 0 })).toMatchObject({ kind: "applied", writeId: low.id });
   }));
 
   test("M10 corrupt spool file is moved aside and a clean spool starts", () => {

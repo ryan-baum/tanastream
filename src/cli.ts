@@ -2,7 +2,7 @@ import { drainOnce, enqueueWrite, reconcileAppliedInput, recoverInflight } from 
 import { RealTanaBackend } from "./realBackend";
 import { openSpool } from "./spool";
 import { acquireDrainLock } from "./lock";
-import { defaultDbPath } from "./config";
+import { defaultDbPath, resolveLocalMinIntervalMs } from "./config";
 import type { EnqueueInput, OpType } from "./types";
 import { OP_TYPES } from "./types";
 import { readFileSync } from "fs";
@@ -101,9 +101,10 @@ async function commandDrain(parsed: ParsedArgs): Promise<void> {
     const backend = new RealTanaBackend();
     const reconciled = await reconcileAppliedInput(spool, backend, { batchLimit: numberFlag(parsed, "reconcile-max") ?? 100 });
     const max = numberFlag(parsed, "max") ?? (parsed.flags.has("once") ? 1 : 100);
+    const localMinIntervalMs = resolveLocalMinIntervalMs(numberFlag(parsed, "local-min-interval-ms"));
     const results = [];
     for (let i = 0; i < max; i += 1) {
-      const result = await drainOnce(spool, backend);
+      const result = await drainOnce(spool, backend, { localMinIntervalMs });
       results.push(result);
       if (result.kind === "idle" || result.kind === "held" || result.kind === "rate_limited") break;
     }
@@ -126,6 +127,7 @@ async function commandDaemon(parsed: ParsedArgs): Promise<void> {
   const idleSleepMs = numberFlag(parsed, "idle-ms") ?? 2_000;
   const heldSleepMs = numberFlag(parsed, "held-ms") ?? 10_000;
   const heartbeatMs = numberFlag(parsed, "heartbeat-ms") ?? 300_000;
+  const localMinIntervalMs = resolveLocalMinIntervalMs(numberFlag(parsed, "local-min-interval-ms"));
   const verbose = parsed.flags.has("verbose");
   recoverInflight(spool);
   const shutdown = () => {
@@ -142,7 +144,7 @@ async function commandDaemon(parsed: ParsedArgs): Promise<void> {
   let lastTickLogMs = 0;
   while (true) {
     await reconcileAppliedInput(spool, backend, { batchLimit: 100 });
-    const result = await drainOnce(spool, backend);
+    const result = await drainOnce(spool, backend, { localMinIntervalMs });
     if (verbose) {
       const actionable =
         result.kind === "applied" || result.kind === "retry" || result.kind === "dead" || result.kind === "stolen";
@@ -329,6 +331,7 @@ Common flags:
   --priority N             Higher priority drains first; ties use insertion id.
   --max-attempts N         Attempts before dead-letter. Default: 5.
   --db PATH                Override SQLite spool path.
+  --local-min-interval-ms N  Min ms between Local-route writes (drain/daemon). Default: 100. 0 disables.
 
 Create flags:
   --name TEXT              Plain node name.

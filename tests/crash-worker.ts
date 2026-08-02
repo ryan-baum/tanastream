@@ -22,5 +22,10 @@ await enqueueWrite(spool, {
 
 recoverInflight(spool);
 const backend = new FileEffectBackend(effectsPath, { crashKey: mode === "crash" ? "crash-key" : undefined });
-await drainOnce(spool, backend, { nowMs: 1_000 });
+// U-4/R-7: the Local-route pacing gate (KTD-4) persists its last-attempt timestamp in the spool
+// DB (survives the SIGKILL by design — it's written before apply, same as noteInputAttempt). Both
+// the "crash" and "restart" invocations use the same fixed nowMs=1_000 (this test isn't about
+// pacing, it's about exactly-once reconcile across a real process kill), so without disabling
+// pacing here the restart's drainOnce would see elapsed=0 and rate-limit instead of applying.
+await drainOnce(spool, backend, { nowMs: 1_000, localMinIntervalMs: 0 });
 spool.close();

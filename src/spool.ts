@@ -203,6 +203,15 @@ export class TanaSpool {
     return numberMeta(this.getMeta("last_input_attempt_at"));
   }
 
+  /** KTD-4: mirrors noteInputAttempt/lastInputAttemptAt for the Local route's pacing gate (R-7). */
+  noteLocalAttempt(nowMs: number): void {
+    this.setMeta("last_local_attempt_at", String(nowMs));
+  }
+
+  lastLocalAttemptAt(): number | null {
+    return numberMeta(this.getMeta("last_local_attempt_at"));
+  }
+
   markReconciled(id: number, result: ApplyResult, nowMs: number): void {
     const row = this.getById(id);
     const previousEvidence = row?.evidence ?? {};

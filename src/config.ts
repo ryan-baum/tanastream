@@ -42,6 +42,22 @@ export interface ResolvedConfig extends TanaStreamConfig {
 
 export const DEFAULT_LOCAL_ENDPOINT = "http://127.0.0.1:8262";
 
+/**
+ * KTD-4 (SPEC.md): pacing is first-class, default on. 100ms (~10 writes/s) sits comfortably under
+ * the measured ~12/s server ceiling (2026-08-01 stress test), so default pacing costs ~0 throughput
+ * while leaving read headroom (bursts stall other readers ~25x — see TanaWritePathDoctrine). `0`
+ * disables it. Overridable via TANASTREAM_LOCAL_MIN_INTERVAL_MS or an explicit CLI/caller value.
+ */
+export const DEFAULT_LOCAL_MIN_INTERVAL_MS = 100;
+
+export function resolveLocalMinIntervalMs(explicit?: number): number {
+  if (explicit !== undefined) return explicit;
+  const env = process.env.TANASTREAM_LOCAL_MIN_INTERVAL_MS;
+  if (env === undefined) return DEFAULT_LOCAL_MIN_INTERVAL_MS;
+  const parsed = Number(env);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_LOCAL_MIN_INTERVAL_MS;
+}
+
 export function ownConfigPath(): string {
   return process.env.TANASTREAM_CONFIG || join(resolvedHomeDir(), ".config", "tanastream", "config.json");
 }

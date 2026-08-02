@@ -1,10 +1,13 @@
 import type { ApplyRoute, DrainResult, EnqueueInput, EnqueueResult, TanaBackend, WriteRow } from "./types";
 import type { TanaSpool } from "./spool";
 import { markerFor } from "./realBackend";
+import { DEFAULT_LOCAL_MIN_INTERVAL_MS } from "./config";
 
 export interface DrainOptions {
   nowMs?: number;
   batchLimit?: number;
+  /** KTD-4 (R-7): min ms between Local-route write applies. Defaults to DEFAULT_LOCAL_MIN_INTERVAL_MS; 0 disables. */
+  localMinIntervalMs?: number;
 }
 
 const INPUT_MIN_INTERVAL_MS = 1_000;
@@ -68,6 +71,21 @@ export async function drainOnce(spool: TanaSpool, backend: TanaBackend, options:
       }
     }
 
+    if (route === "local") {
+      // KTD-4/R-7: same clamp pattern as the Input gate above, mirrored for the Local route.
+      // localMinIntervalMs: 0 disables the gate entirely (no elapsed check at all).
+      const localMinIntervalMs = options.localMinIntervalMs ?? DEFAULT_LOCAL_MIN_INTERVAL_MS;
+      if (localMinIntervalMs > 0) {
+        const lastLocalAt = spool.lastLocalAttemptAt() ?? 0;
+        if (lastLocalAt > 0) {
+          const elapsed = Math.max(0, nowMs - lastLocalAt);
+          if (elapsed < localMinIntervalMs) {
+            return { kind: "rate_limited", sleepMs: Math.min(localMinIntervalMs, localMinIntervalMs - elapsed) };
+          }
+        }
+      }
+    }
+
     const reconciled = await safeReconcile(backend, row);
     if (reconciled) {
       spool.markApplied(row.id, reconciled, nowMs);
@@ -78,6 +96,7 @@ export async function drainOnce(spool: TanaSpool, backend: TanaBackend, options:
     if (!claimed) return { kind: "stolen", writeId: row.id };
     try {
       if (route === "input") spool.noteInputAttempt(nowMs);
+      if (route === "local") spool.noteLocalAttempt(nowMs);
       const applied = await backend.apply(row, route, { nowMs });
       spool.markApplied(row.id, applied, nowMs);
       return { kind: "applied", writeId: row.id, route: applied.route };
