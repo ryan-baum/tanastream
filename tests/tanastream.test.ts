@@ -531,6 +531,41 @@ describe("TanaStream adversarial matrix", () => {
     await expect(drainOnce(spool, backend, { nowMs: 1 })).rejects.toThrow(/simulated ledger write failure/);
   }));
 
+  // Forge-audit fix (U-10, Finding 6): the events table is an append-only audit log with no cap —
+  // a long stretch with many pending rows held on every tick can accumulate rows fast. Pruned to
+  // a bounded cap (TANASTREAM_MAX_EVENTS, default 10,000) on every spool open.
+  test("M18 events table is pruned to a bounded cap on spool re-open (most recent survive)", () => {
+    const dir = tempDir();
+    const dbPath = join(dir, "spool.db");
+    const savedCap = process.env.TANASTREAM_MAX_EVENTS;
+    process.env.TANASTREAM_MAX_EVENTS = "50"; // small cap so the test seeds few rows and stays fast
+    try {
+      const spool1 = openSpool({ dbPath, recoverCorrupt: true });
+      for (let i = 0; i < 60; i += 1) spool1.event(null, "test-event", `event ${i}`, {}, i);
+      const before = spool1.db.query("SELECT count(*) AS c FROM events").get() as { c: number };
+      expect(before.c).toBe(60);
+      spool1.close();
+
+      // Re-open: initialize() prunes to the (env-overridden) cap.
+      const spool2 = openSpool({ dbPath, recoverCorrupt: true });
+      try {
+        const after = spool2.db.query("SELECT count(*) AS c FROM events").get() as { c: number };
+        expect(after.c).toBe(50);
+        // The MOST RECENT events survive (highest id), not the oldest.
+        const newest = spool2.db.query("SELECT message FROM events ORDER BY id DESC LIMIT 1").get() as { message: string };
+        const oldestSurviving = spool2.db.query("SELECT message FROM events ORDER BY id ASC LIMIT 1").get() as { message: string };
+        expect(newest.message).toBe("event 59");
+        expect(oldestSurviving.message).toBe("event 10"); // the oldest 10 (0..9) were pruned away
+      } finally {
+        spool2.close();
+      }
+    } finally {
+      if (savedCap === undefined) delete process.env.TANASTREAM_MAX_EVENTS;
+      else process.env.TANASTREAM_MAX_EVENTS = savedCap;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("M3 actual kill after apply then restart reconciles exactly once", async () => {
     const dir = tempDir();
     const dbPath = join(dir, "spool.db");

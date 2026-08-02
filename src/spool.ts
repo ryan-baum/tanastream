@@ -408,6 +408,27 @@ function initialize(db: Database): void {
 
   ensureColumn(db, "writes", "needs_reconcile", "needs_reconcile INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "writes", "reconciled_at", "reconciled_at INTEGER");
+  pruneEvents(db);
+}
+
+/**
+ * The events table is an append-only audit log with no built-in cap — every drain tick logs one
+ * row per held/applied/retry/dead transition, so a long stretch with Tana closed and many pending
+ * rows (each re-logging "held" on every tick) can accumulate a large number of rows quickly (tens
+ * of thousands per day is easily reached with a modest pending count and a short poll interval).
+ * This prunes to the most recent MAX_EVENTS rows on every spool open. Known limitation: a single
+ * long-running daemon process that never re-opens the spool won't benefit mid-run — this bounds
+ * growth ACROSS restarts, not within one continuous run. A time- or count-based prune inside the
+ * hot insert path would close that gap too, at the cost of a per-insert check; not done here.
+ */
+// Resolved per call (not a frozen module-level constant) so it reflects the environment at the
+// moment a spool actually opens — including in tests that set the override just before opening.
+function maxEvents(): number {
+  return Number(process.env.TANASTREAM_MAX_EVENTS) || 10_000;
+}
+
+function pruneEvents(db: Database): void {
+  db.exec(`DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT ${maxEvents()})`);
 }
 
 function decodeRow(row: StoredWriteRow): WriteRow {

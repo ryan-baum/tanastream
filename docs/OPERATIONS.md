@@ -67,6 +67,12 @@ retrying forever, so one poison write never blocks the rest of the queue.
 | systemd | `journalctl --user -u tanastream` |
 | Foreground | your terminal |
 
+The spool's internal `events` table (an append-only audit log — one row per enqueue/apply/retry/
+held/dead transition) is pruned to the most recent `TANASTREAM_MAX_EVENTS` rows (default 10,000)
+every time the spool opens. A single long-running daemon process that never restarts won't benefit
+mid-run from this — it bounds growth across restarts, not within one continuous run. If you need
+to inspect events, query the SQLite file directly (`sqlite3 <spool.db> "SELECT * FROM events ..."`).
+
 ## Pacing
 
 The Local-route write pacing gate (`--local-min-interval-ms`, default 100ms) is on by default in
