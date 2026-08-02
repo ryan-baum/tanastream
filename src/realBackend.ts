@@ -1,28 +1,25 @@
-import { existsSync, readFileSync } from "fs";
-import { supertagConfigPath, supertagPath } from "./paths";
+import { homedir } from "os";
+import { join } from "path";
+import { resolveConfig, DEFAULT_LOCAL_ENDPOINT, type TanaStreamConfig } from "./config";
 import type { ApplyResult, ApplyRoute, BackendHealth, TanaBackend, WriteRow } from "./types";
-
-interface SupertagConfig {
-  apiEndpoint?: string;
-  apiToken?: string;
-  defaultTargetNode?: string;
-  localApi?: {
-    enabled?: boolean;
-    endpoint?: string;
-    bearerToken?: string;
-  };
-}
 
 interface CreatedNode {
   id: string;
   name: string;
 }
 
-const DEFAULT_LOCAL_ENDPOINT = "http://127.0.0.1:8262";
 const IDEMPOTENCY_PREFIX = "TanaStreamIdempotency - ";
 
+// TODO(U-3): supertagBinPath() and every runSupertag()/mustRunSupertag() call-site die with the
+// subprocess-invocation removal (R-4). Kept as a private, non-exported helper here (not part of
+// src/config.ts, which owns only TanaStream's OWN config discovery per KTD-2) so the build keeps
+// compiling and the 120-test baseline keeps passing until U-3 lands.
+function supertagBinPath(): string {
+  return process.env.SUPERTAG_BIN || join(homedir(), "Tools", "supertag-cli", "supertag");
+}
+
 export class RealTanaBackend implements TanaBackend {
-  private readonly config: SupertagConfig;
+  private readonly config: TanaStreamConfig;
   private workspaceId: string | null = null;
 
   constructor(
@@ -32,7 +29,7 @@ export class RealTanaBackend implements TanaBackend {
       timeoutMs?: number;
     } = {},
   ) {
-    this.config = loadConfig(options.configPath || supertagConfigPath());
+    this.config = resolveConfig(options.configPath);
   }
 
   async health(): Promise<BackendHealth> {
@@ -355,7 +352,7 @@ export class RealTanaBackend implements TanaBackend {
   }
 
   private async runSupertag(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-    const proc = Bun.spawn([this.options.supertagBin || supertagPath(), ...args], {
+    const proc = Bun.spawn([this.options.supertagBin || supertagBinPath(), ...args], {
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -452,11 +449,6 @@ export function markerMatches(markdown: string, row: WriteRow): boolean {
   const marker = markerFor(row);
   if (!marker) return false;
   return markdownHasMarkerLine(markdown, marker);
-}
-
-function loadConfig(path: string): SupertagConfig {
-  if (!existsSync(path)) return {};
-  return JSON.parse(readFileSync(path, "utf-8")) as SupertagConfig;
 }
 
 function requireString(value: unknown, label: string): string {

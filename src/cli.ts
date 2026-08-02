@@ -2,7 +2,7 @@ import { drainOnce, enqueueWrite, reconcileAppliedInput, recoverInflight } from 
 import { RealTanaBackend } from "./realBackend";
 import { openSpool } from "./spool";
 import { acquireDrainLock } from "./lock";
-import { defaultDbPath } from "./paths";
+import { defaultDbPath } from "./config";
 import type { EnqueueInput, OpType } from "./types";
 import { OP_TYPES } from "./types";
 import { readFileSync } from "fs";

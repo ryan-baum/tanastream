@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, renameSync, rmSync } from "fs";
 import { createHash } from "crypto";
-import { ensureParent, defaultDbPath } from "./paths";
+import { ensureParent, defaultDbPath } from "./config";
 import { assertCreateSafe, assertKeySafe } from "./validate";
 import type { ApplyResult, EnqueueInput, EnqueueResult, OpType, QueueStatus, WriteRow, WriteState } from "./types";
 import { OP_TYPES } from "./types";
