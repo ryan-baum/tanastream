@@ -92,3 +92,31 @@ export function assertKeySafe(idempotencyKey: string): void {
     );
   }
 }
+
+/**
+ * KTD-9 (SPEC.md): the standalone tool has no local name-resolution index the way supertag's
+ * subprocess did (it kept a synced index of tag/field names -> IDs). The public MCP `tag` tool
+ * requires `tagIds`; a name-only payload would fail opaquely against that schema at apply time.
+ * Reject loudly at enqueue instead, naming how to find the ID. Call for "tag" ops only.
+ */
+export function assertTagIdPresent(payload: Record<string, unknown>): void {
+  if (typeof payload.tagId === "string" && payload.tagId.trim().length > 0) return;
+  throw new Error(
+    "TANA_ID_REQUIRED: a 'tag' op needs payload.tagId (not a tag name) — the standalone tool has " +
+      "no name-resolution index. Find the tag's ID via Tana's node context menu (right-click the " +
+      "tag definition -> Copy ID), or supertag-cli's `schema show <name>`, then pass it as tagId.",
+  );
+}
+
+/**
+ * KTD-9 (SPEC.md): same reasoning as assertTagIdPresent — the public MCP `set_field_content` /
+ * `set_field_option` tools require `attributeId`, not a field name. Call for "field" ops only.
+ */
+export function assertFieldAttributeIdPresent(payload: Record<string, unknown>): void {
+  if (typeof payload.attributeId === "string" && payload.attributeId.trim().length > 0) return;
+  throw new Error(
+    "TANA_ID_REQUIRED: a 'field' op needs payload.attributeId (not a field name) — the standalone " +
+      "tool has no name-resolution index. Find the field's attribute ID via Tana's node context " +
+      "menu on the field definition, or supertag-cli's `schema show`, then pass it as attributeId.",
+  );
+}

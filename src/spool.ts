@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, renameSync, rmSync } from "fs";
 import { createHash } from "crypto";
 import { ensureParent, defaultDbPath } from "./config";
-import { assertCreateSafe, assertKeySafe } from "./validate";
+import { assertCreateSafe, assertFieldAttributeIdPresent, assertKeySafe, assertTagIdPresent } from "./validate";
 import type { ApplyResult, EnqueueInput, EnqueueResult, OpType, QueueStatus, WriteRow, WriteState } from "./types";
 import { OP_TYPES } from "./types";
 
@@ -65,6 +65,9 @@ export class TanaSpool {
       // orphan-duplicate the create via a read-back whitespace mismatch. Auto-hash keys are hex-safe.
       if (input.idempotencyKey) assertKeySafe(input.idempotencyKey);
     }
+    // KTD-9: tag/field ops require an ID, never a name — reject loudly at enqueue (see validate.ts).
+    if (input.opType === "tag") assertTagIdPresent(input.payload);
+    if (input.opType === "field") assertFieldAttributeIdPresent(input.payload);
     const targetNodeId = input.targetNodeId || payloadTarget(input.payload);
     const idempotencyKey = input.idempotencyKey || hashInput(input, targetNodeId);
     const dedupKey = `${input.opType}:${idempotencyKey}`;
