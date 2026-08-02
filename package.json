@@ -7,9 +7,9 @@
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/YOUR_USERNAME/tanastream.git"
+    "url": "git+https://github.com/ryan-baum/tanastream.git"
   },
-  "homepage": "https://github.com/YOUR_USERNAME/tanastream#readme",
+  "homepage": "https://github.com/ryan-baum/tanastream#readme",
   "bin": {
     "tanastream": "./tanastream"
   },
