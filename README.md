@@ -44,7 +44,7 @@ op types as the open question.
 ## Install
 
 ```bash
-git clone <this-repo> tanastream
+git clone https://github.com/ryan-baum/tanastream.git
 cd tanastream
 bun install
 ```
