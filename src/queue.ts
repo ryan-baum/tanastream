@@ -1,6 +1,7 @@
 import type { ApplyResult, ApplyRoute, DrainResult, EnqueueInput, EnqueueResult, TanaBackend, WriteRow } from "./types";
 import type { TanaSpool } from "./spool";
 import { markerFor } from "./realBackend";
+import { isRaw } from "./validate";
 import { DEFAULT_LOCAL_MIN_INTERVAL_MS } from "./config";
 
 export interface DrainOptions {
@@ -143,9 +144,13 @@ export async function drainOnce(spool: TanaSpool, backend: TanaBackend, options:
 // The Input API has no Tana-Paste endpoint — buildInputNode() only knows structured
 // name/description/children and throws "name is required" on a tanaPaste-only payload.
 // Routing a raw-paste create to Input isn't a fallback, it's a guaranteed throw that burns
-// the write's attempt budget for nothing. Such creates are Local-only; hold them instead.
+// the write's attempt budget for nothing. A rawTanaPaste:true create doesn't throw there but
+// fails WORSE — silently: Input doesn't parse Tana Paste, so "X #tag" lands as literal name
+// text (the syntax the producer opted into raw mode FOR is lost), and with no marker the input
+// row can never be reconciled. Raw creates of EITHER form (isRaw, the same predicate the
+// enqueue denylist and localCreate verification use) are Local-only; hold them instead.
 function isRawPasteCreate(row: WriteRow): boolean {
-  return row.opType === "create" && typeof row.payload.tanaPaste === "string";
+  return row.opType === "create" && isRaw(row.payload);
 }
 
 function chooseRoute(row: WriteRow, health: { localAvailable: boolean; inputAvailable: boolean }): ApplyRoute | null {
