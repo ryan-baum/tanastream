@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, renameSync } from "fs";
 import { createHash } from "crypto";
 import { ensureParent, defaultDbPath } from "./config";
-import { assertCreateSafe, assertFieldAttributeIdPresent, assertKeySafe, assertTagIdPresent } from "./validate";
+import { assertCreateSafe, assertFieldAttributeIdPresent, assertKeySafe, assertTagIdPresent, requireTagAction } from "./validate";
 import type { ApplyResult, ApplyRoute, EnqueueInput, EnqueueResult, OpType, QueueStatus, WriteRow, WriteState } from "./types";
 import { OP_TYPES } from "./types";
 
@@ -66,7 +66,10 @@ export class TanaSpool {
       if (input.idempotencyKey) assertKeySafe(input.idempotencyKey);
     }
     // tag/field ops require an ID, never a name — reject loudly at enqueue (see validate.ts).
-    if (input.opType === "tag") assertTagIdPresent(input.payload);
+    if (input.opType === "tag") {
+      assertTagIdPresent(input.payload);
+      requireTagAction(input.payload);
+    }
     if (input.opType === "field") assertFieldAttributeIdPresent(input.payload);
     const targetNodeId = input.targetNodeId || payloadTarget(input.payload);
     const idempotencyKey = input.idempotencyKey || hashInput(input, targetNodeId);
