@@ -1,5 +1,5 @@
 import { resolveConfig, DEFAULT_LOCAL_ENDPOINT, type TanaStreamConfig } from "./config";
-import { isRaw } from "./validate";
+import { isRaw, requireTagAction } from "./validate";
 import type { ApplyResult, ApplyRoute, BackendHealth, TanaBackend, WriteRow } from "./types";
 
 interface CreatedNode {
@@ -257,7 +257,7 @@ export class RealTanaBackend implements TanaBackend {
    */
   private async localTag(row: WriteRow): Promise<ApplyResult> {
     const nodeId = requireString(row.payload.nodeId ?? row.targetNodeId, "nodeId");
-    const action = (row.payload.action === "remove" ? "remove" : "add") as "add" | "remove";
+    const action = requireTagAction(row.payload);
     const tagId = requireString(row.payload.tagId, "tagId");
     await this.mcpCall("tag", { nodeId, action, tagIds: [tagId] });
     return this.readNodeEvidence(nodeId, `tag ${action}`);

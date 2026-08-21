@@ -25,6 +25,7 @@ let tags: Array<{ id: string; name: string }> = [];
 let mcpMode: "ok" | "isError" | "http500" | "rpcError" | "malformed" | "unparseableListTags" | "sseFramed" = "ok";
 let lastMcpAccept: string | null = null;
 let lastMcpCall: { name: string; arguments: Record<string, unknown> } | null = null;
+let mcpCalls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
 let createTagCallCount = 0;
 let tagAppearsAfterNCreateCalls = 1;
 
@@ -46,6 +47,7 @@ beforeAll(() => {
         lastMcpAccept = req.headers.get("Accept");
         const body = (await req.json().catch(() => ({}))) as { id?: number; params?: { name: string; arguments: Record<string, unknown> } };
         lastMcpCall = body.params ?? null;
+        if (body.params) mcpCalls.push(structuredClone(body.params));
         const toolName = body.params?.name;
 
         if (mcpMode === "http500") return new Response("boom", { status: 500 });
@@ -144,18 +146,19 @@ afterEach(() => {
   mcpMode = "ok";
   lastMcpAccept = null;
   lastMcpCall = null;
+  mcpCalls = [];
   createTagCallCount = 0;
   tagAppearsAfterNCreateCalls = 1;
 });
 
-function makeBackend(): { backend: RealTanaBackend; cleanup: () => void } {
+function makeBackend(options: { endpoint?: string; timeoutMs?: number } = {}): { backend: RealTanaBackend; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "tanastream-directhttp-"));
   const configPath = join(dir, "config.json");
   writeFileSync(
     configPath,
-    JSON.stringify({ localApi: { enabled: true, endpoint: `http://127.0.0.1:${PORT}`, bearerToken: "t" } }),
+    JSON.stringify({ localApi: { enabled: true, endpoint: options.endpoint ?? `http://127.0.0.1:${PORT}`, bearerToken: "t" } }),
   );
-  return { backend: new RealTanaBackend({ configPath }), cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return { backend: new RealTanaBackend({ configPath, timeoutMs: options.timeoutMs }), cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
 function rowFor(opType: WriteRow["opType"], key: string, payload: Record<string, unknown>, targetNodeId = "n1"): WriteRow {
@@ -222,6 +225,174 @@ describe("R-5: tag add/remove via /mcp", () => {
       mcpMode = "isError";
       const row = rowFor("tag", "t2", { nodeId: "n1", action: "add", tagId: "tag-abc" });
       await expect(backend.apply(row, "local", { nowMs: Date.now() })).rejects.toThrow();
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("exact tag IDs are opaque request data", () => {
+  test.each(["add", "remove"] as const)("%s preserves an ID that collides with another tag's name without lookup", async (action) => {
+    const { backend, cleanup } = makeBackend();
+    try {
+      const collisionId = "opaque-tag-id";
+      nodesById.n1 = { id: "n1", name: "Tagged Node" };
+      tags = [{ id: "different-tag-id", name: collisionId }];
+      tagAppearsAfterNCreateCalls = 0;
+      const row = rowFor("tag", `collision-${action}`, { nodeId: "n1", action, tagId: collisionId });
+
+      await backend.apply(row, "local", { nowMs: Date.now() });
+
+      expect(mcpCalls).toEqual([{ name: "tag", arguments: { nodeId: "n1", action, tagIds: [collisionId] } }]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("dash and underscore ID string values remain exactly unchanged", async () => {
+    const { backend, cleanup } = makeBackend();
+    try {
+      nodesById.n1 = { id: "n1", name: "Tagged Node" };
+      const ids = ["tag-with-dashes", "tag_with_underscores", "tag-with_mixed-shapes"];
+
+      for (const [index, tagId] of ids.entries()) {
+        const row = rowFor("tag", `shape-${index}`, { nodeId: "n1", action: "add", tagId });
+        await backend.apply(row, "local", { nowMs: Date.now() });
+      }
+
+      expect(mcpCalls.map((call) => call.arguments.tagIds)).toEqual(ids.map((tagId) => [tagId]));
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("name-only, empty, and whitespace-only IDs reject before queue mutation", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tanastream-exact-tag-id-reject-"));
+    const spool = openSpool({ dbPath: join(dir, "spool.db"), recoverCorrupt: true });
+    try {
+      const invalidPayloads = [
+        { nodeId: "n1", action: "add", tagNameOrId: "SomeTagName" },
+        { nodeId: "n1", action: "add", tagId: "" },
+        { nodeId: "n1", action: "add", tagId: " \t\n " },
+      ];
+
+      for (const payload of invalidPayloads) {
+        await expect(enqueueWrite(spool, { opType: "tag", payload, source: "t" })).rejects.toThrow(/TANA_ID_REQUIRED/);
+        expect(spool.status()).toMatchObject({ pending: 0, inflight: 0, applied: 0, dead: 0 });
+        expect(mcpCalls).toHaveLength(0);
+      }
+    } finally {
+      spool.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("exact duplicate intent dedups, while reusing the key for a different tag ID conflicts", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tanastream-exact-tag-id-dedup-"));
+    const spool = openSpool({ dbPath: join(dir, "spool.db"), recoverCorrupt: true });
+    try {
+      const input = {
+        opType: "tag" as const,
+        idempotencyKey: "exact-tag-dedup",
+        payload: { nodeId: "n1", action: "add", tagId: "first-tag-id" },
+        source: "t",
+      };
+      const first = await enqueueWrite(spool, input);
+      const duplicate = await enqueueWrite(spool, input);
+
+      expect(duplicate).toMatchObject({ id: first.id, inserted: false });
+      await expect(
+        enqueueWrite(spool, { ...input, payload: { ...input.payload, tagId: "different-tag-id" } }),
+      ).rejects.toThrow(/IDEMPOTENCY_CONFLICT/);
+      expect(spool.status()).toMatchObject({ pending: 1, inflight: 0, applied: 0, dead: 0 });
+    } finally {
+      spool.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("invalid action rejects before queue mutation", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tanastream-tag-action-reject-"));
+    const spool = openSpool({ dbPath: join(dir, "spool.db"), recoverCorrupt: true });
+    try {
+      await expect(
+        enqueueWrite(spool, {
+          opType: "tag",
+          payload: { nodeId: "n1", action: "removee", tagId: "tag-abc" },
+          source: "t",
+        }),
+      ).rejects.toThrow(/TANA_TAG_ACTION_INVALID/);
+      expect(spool.status()).toMatchObject({ pending: 0, inflight: 0, applied: 0, dead: 0 });
+      expect(mcpCalls).toHaveLength(0);
+    } finally {
+      spool.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("backend defense rejects an invalid action before MCP when queue validation is bypassed", async () => {
+    const { backend, cleanup } = makeBackend();
+    try {
+      nodesById.n1 = { id: "n1", name: "Tagged Node" };
+      const row = rowFor("tag", "invalid-action-bypass", { nodeId: "n1", action: "add", tagId: "tag-abc" });
+      row.payload.action = "removee";
+
+      await expect(backend.apply(row, "local", { nowMs: Date.now() })).rejects.toThrow(/TANA_TAG_ACTION_INVALID/);
+      expect(mcpCalls).toHaveLength(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("malformed MCP response cannot become tag success", async () => {
+    const { backend, cleanup } = makeBackend();
+    try {
+      nodesById.n1 = { id: "n1", name: "Tagged Node" };
+      mcpMode = "malformed";
+      const row = rowFor("tag", "tag-malformed", { nodeId: "n1", action: "add", tagId: "tag-abc" });
+      await expect(backend.apply(row, "local", { nowMs: Date.now() })).rejects.toThrow(/non-JSON/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("transport failure cannot become tag success", async () => {
+    const closedServer = Bun.serve({ port: 0, fetch: () => Response.json({}) });
+    const endpoint = `http://127.0.0.1:${closedServer.port}`;
+    closedServer.stop(true);
+    const { backend, cleanup } = makeBackend({ endpoint, timeoutMs: 250 });
+    try {
+      const row = rowFor("tag", "tag-transport", { nodeId: "n1", action: "add", tagId: "tag-abc" });
+      await expect(backend.apply(row, "local", { nowMs: Date.now() })).rejects.toThrow();
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("successful MCP response without node readback cannot become tag success", async () => {
+    const { backend, cleanup } = makeBackend();
+    try {
+      const row = rowFor("tag", "tag-no-readback", { nodeId: "missing", action: "add", tagId: "tag-abc" });
+      await expect(backend.apply(row, "local", { nowMs: Date.now() })).rejects.toThrow(/HTTP 404/);
+      expect(mcpCalls).toEqual([{ name: "tag", arguments: { nodeId: "missing", action: "add", tagIds: ["tag-abc"] } }]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("repeated runs produce identical MCP arguments and evidence", async () => {
+    const { backend, cleanup } = makeBackend();
+    try {
+      nodesById.n1 = { id: "n1", name: "Tagged Node" };
+      const payload = { nodeId: "n1", action: "add", tagId: "stable-tag-id" };
+      const first = await backend.apply(rowFor("tag", "determinism-1", payload), "local", { nowMs: 1 });
+      const second = await backend.apply(rowFor("tag", "determinism-2", payload), "local", { nowMs: 2 });
+
+      expect(mcpCalls).toEqual([
+        { name: "tag", arguments: { nodeId: "n1", action: "add", tagIds: ["stable-tag-id"] } },
+        { name: "tag", arguments: { nodeId: "n1", action: "add", tagIds: ["stable-tag-id"] } },
+      ]);
+      expect(first).toEqual(second);
     } finally {
       cleanup();
     }

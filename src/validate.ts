@@ -119,6 +119,15 @@ export function assertTagIdPresent(payload: Record<string, unknown>): void {
   );
 }
 
+/** Return the closed tag-action enum, rejecting invalid values before they can default to add. */
+export function requireTagAction(payload: Record<string, unknown>): "add" | "remove" {
+  if (payload.action === undefined || payload.action === "add") return "add";
+  if (payload.action === "remove") return "remove";
+  throw new Error(
+    `TANA_TAG_ACTION_INVALID: a 'tag' op action must be "add" or "remove" when provided; got ${JSON.stringify(payload.action)}.`,
+  );
+}
+
 /**
  * Same reasoning as assertTagIdPresent — Tana's `set_field_content` / `set_field_option` MCP
  * tools require `attributeId`, not a field name. Call for "field" ops only.
