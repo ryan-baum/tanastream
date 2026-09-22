@@ -88,7 +88,7 @@ export class TanaSpool {
         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
         ON CONFLICT(dedup_key) DO NOTHING
       `)
-      .run(dedupKey, idempotencyKey, input.opType, payloadJson, targetNodeId, priority, source, maxAttempts, nowMs, nowMs);
+      .run(dedupKey, idempotencyKey, input.opType, payloadJson, targetNodeId ?? null, priority, source, maxAttempts, nowMs, nowMs);
 
     const row = this.getByDedupKey(dedupKey);
     if (!row) throw new Error("enqueue failed to read inserted row");

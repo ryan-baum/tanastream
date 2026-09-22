@@ -160,6 +160,7 @@ describe("TanaStream adversarial matrix", () => {
 
     const result = await drainOnce(spool, backend, { nowMs: 1_000 });
     expect(result.kind).toBe("applied");
+    if (result.kind !== "applied") return; // narrows for TS; expect() above already failed the test
     expect(result.writeId).toBe(create.id);
     expect(spool.status()).toMatchObject({ pending: 1, applied: 1, dead: 0 });
   }));

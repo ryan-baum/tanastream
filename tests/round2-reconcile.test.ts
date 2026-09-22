@@ -80,7 +80,7 @@ beforeAll(() => {
       return new Response("unhandled", { status: 404 });
     },
   });
-  PORT = server.port;
+  PORT = server.port ?? 0;
 });
 
 afterAll(() => { server?.stop(true); });
